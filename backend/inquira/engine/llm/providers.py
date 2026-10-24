@@ -7,6 +7,7 @@ reduced to that. Adding a provider means adding one class here.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ from typing import Any, ClassVar
 
 from inquira.core.errors import ApiError
 from inquira.engine.warehouse.base import FieldSpec
+
+log = logging.getLogger(__name__)
 
 
 class LLMError(ApiError):
@@ -56,6 +59,16 @@ class LLMProvider(ABC):
     @abstractmethod
     def _complete(self, system: str, prompt: str) -> str: ...
 
+    key_prefix: ClassVar[str | None] = None
+    key_help: ClassVar[str | None] = None
+
+    def key_format_hint(self) -> str | None:
+        key = (self.config.api_key or "").strip()
+        if self.key_prefix and key and not key.startswith(self.key_prefix):
+            hint = f"{self.label} keys start with \u201c{self.key_prefix}\u201d, but this one doesn't."
+            return f"{hint} {self.key_help}" if self.key_help else hint
+        return None
+
     def _list_models(self) -> list[ModelInfo]:
         """Live model listing from the provider API. Override per provider."""
         raise NotImplementedError
@@ -71,7 +84,7 @@ class LLMProvider(ABC):
         except NotImplementedError:
             return self.curated_models(), "curated", None
         except Exception as e:
-            return self.curated_models(), "curated", _friendly_error(self.label, e)
+            return self.curated_models(), "curated", _friendly_error(self.label, e, self.key_format_hint())
         if not live:
             return self.curated_models(), "curated", f"{self.label} returned no usable chat models."
         return live, "live", None
@@ -82,7 +95,7 @@ class LLMProvider(ABC):
         except ApiError:
             raise
         except Exception as e:  # provider SDKs raise many types; surface a clean message
-            raise LLMError(_friendly_error(self.label, e)) from e
+            raise LLMError(_friendly_error(self.label, e, self.key_format_hint())) from e
         return parse_json(text)
 
 
@@ -93,21 +106,41 @@ def _short(e: Exception) -> str:
     return msg[:300]
 
 
-def _friendly_error(label: str, e: Exception) -> str:
+def _provider_detail(e: Exception) -> str:
+    """The provider's own explanation, without SDK noise or credentials."""
+    detail = getattr(e, "message", None)
+    body = getattr(e, "body", None)
+    if not detail and isinstance(body, dict):
+        err = body.get("error")
+        detail = err.get("message") if isinstance(err, dict) else None
+    detail = str(detail or _short(e)).strip().splitlines()[0]
+    detail = re.sub(r"(sk-|AIza|key=)[A-Za-z0-9_\-*.]{4,}", r"\1***", detail)
+    return detail[:240].rstrip(".")
+
+
+def _friendly_error(label: str, e: Exception, key_hint: str | None = None) -> str:
     status = getattr(e, "status_code", None) or getattr(e, "code", None)
-    text = str(e).lower()
+    detail = _provider_detail(e)
+    text = f"{e} {getattr(e, 'message', '') or ''} {detail}".lower()
+    log.warning("%s error (status=%s): %s", label, status, detail)
+    if "location is not supported" in text or "not available in your country" in text:
+        return f"{label} isn't available from this server's region ({detail}). Use another provider or a proxy region."
+    if "has not been used in project" in text or "service_disabled" in text or "is disabled" in text:
+        return (f"The API isn't enabled for this key's Google Cloud project ({detail}). "
+                f"Create a key at aistudio.google.com/apikey, or enable the Generative Language API.")
     if status in (401, 403) or any(k in text for k in ("api key", "api_key", "unauthorized", "authentication",
-                                                        "permission denied")):
-        return f"{label} rejected the API key. Check it's correct and active, and that it belongs to {label}."
-    if status == 404 or "not found" in text and "model" in text:
-        return f"{label} doesn't recognise that model name. Pick one of the suggested models in Settings."
+                                                        "permission denied", "invalid x-api-key")):
+        msg = f"{label} rejected the API key: \u201c{detail}\u201d."
+        return f"{msg} {key_hint}" if key_hint else f"{msg} Check that it's correct, active, and from {label}."
+    if status == 404 or ("not found" in text and "model" in text):
+        return f"{label} doesn't recognise that model ({detail}). Pick one from the model list."
     if status == 429 or "quota" in text or "rate limit" in text:
-        return f"{label} is rate-limiting this key or its quota is exhausted. Try again shortly."
+        return f"{label} is rate-limiting this key or its quota is exhausted ({detail})."
     if "timed out" in text or "timeout" in text:
         return f"{label} didn't respond in time. Please try again."
     if "connect" in text:
         return f"Couldn't reach {label}. Check the network or base URL."
-    return f"{label} request failed: {_short(e)}"
+    return f"{label} request failed: {detail}"
 
 
 # Recognisable key prefixes -> the provider that issued them.
@@ -143,6 +176,9 @@ class GeminiProvider(LLMProvider):
     label = "Google Gemini"
     description = "Fast and cost-effective. A generous free tier is available from Google AI Studio."
     default_model = "gemini-2.5-flash"
+    key_prefix = "AIza"
+    key_help = ("Create one at aistudio.google.com/apikey "
+                "(Google Cloud OAuth secrets or service-account keys won't work).")
     models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-3.5-flash"]
     # Models that can't do text-to-JSON chat (speech, image, music, agents, ...).
     _EXCLUDE = re.compile(r"tts|image|banana|lyria|transcribe|robotics|computer-use|antigravity|deep-research|"
@@ -183,6 +219,8 @@ class AnthropicProvider(LLMProvider):
     label = "Anthropic Claude"
     description = "Excellent at reasoning over complex schemas and multi-step analytics."
     default_model = "claude-sonnet-5-5"
+    key_prefix = "sk-ant-"
+    key_help = "Create one at console.anthropic.com/settings/keys."
     models = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"]
 
     def _list_models(self) -> list[ModelInfo]:
@@ -209,6 +247,8 @@ class OpenAIProvider(LLMProvider):
     label = "OpenAI"
     description = "GPT models via the OpenAI API."
     default_model = "gpt-4.1-mini"
+    key_prefix = "sk-"
+    key_help = "Create one at platform.openai.com/api-keys."
     models = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"]
     _INCLUDE = re.compile(r"^(gpt-|o\d|chatgpt-)", re.I)
     _EXCLUDE = re.compile(r"audio|realtime|tts|transcribe|search|image|embedding|instruct|codex|moderation", re.I)
@@ -238,6 +278,7 @@ class OpenAICompatibleProvider(OpenAIProvider):
     label = "OpenAI-compatible / Local"
     description = "Ollama, vLLM, LM Studio, Groq, Together, OpenRouter: any OpenAI-compatible endpoint."
     default_model = "llama3.1:8b"
+    key_prefix = None  # Groq, OpenRouter, Together, ... all use their own formats
     models = ["llama3.1:8b", "qwen2.5-coder:14b", "mistral-small"]
     fields = [
         FieldSpec("base_url", "Base URL", placeholder="http://localhost:11434/v1"),

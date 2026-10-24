@@ -100,3 +100,27 @@ def test_auth_errors_are_friendly_and_scrubbed():
 
     msg = _friendly_error("OpenAI", AuthErr("Incorrect API key provided: sk-ant-o*****oQAA"))
     assert "rejected the API key" in msg and "sk-ant" not in msg
+
+
+def test_rejected_key_shows_provider_reason_and_format_hint():
+    from inquira.engine.llm.providers import GeminiProvider, OpenAICompatibleProvider
+
+    class GoogleErr(Exception):
+        code = 400
+        message = "API key not valid. Please pass a valid API key."
+
+    def bad(self):
+        raise GoogleErr("400 INVALID_ARGUMENT")
+
+    import pytest
+    mp = pytest.MonkeyPatch()
+    mp.setattr(GeminiProvider, "_list_models", bad)
+    try:
+        _, source, msg = GeminiProvider(LLMConfig("gemini", "x", "ya29.some-oauth-token-value")).list_models()
+        assert source == "curated"
+        assert "API key not valid" in msg and "start with “AIza”" in msg and "ya29" not in msg
+        _, _, msg = GeminiProvider(LLMConfig("gemini", "x", "AIzaSyWrongButWellFormed000000000000")).list_models()
+        assert "start with" not in msg  # correctly formatted key: no misleading format hint
+    finally:
+        mp.undo()
+    assert OpenAICompatibleProvider(LLMConfig("openai_compatible", "x", "gsk_groq_key")).key_format_hint() is None
