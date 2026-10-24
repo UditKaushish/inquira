@@ -132,7 +132,9 @@ def test_model_listing_live_and_fallback(client, admin, monkeypatch):
     # With a key: live list from the provider API.
     monkeypatch.setattr(AnthropicProvider, "_list_models",
                         lambda self: [ModelInfo("claude-new-1", "Claude New"), ModelInfo("claude-old-0")])
-    r = client.post(f"{API}/settings/llm/models", json={"provider": "anthropic", "api_key": "sk-ant-api03-x"}).json()
+    monkeypatch.setattr(AnthropicProvider, "_probe", lambda self, model_id: None)
+    r = client.post(f"{API}/settings/llm/models",
+                    json={"provider": "anthropic", "api_key": "sk-ant-api03-x", "refresh": True}).json()
     assert r["source"] == "live" and [m["id"] for m in r["models"]] == ["claude-new-1", "claude-old-0"]
     # Provider API failing: fall back to curated with a readable reason.
     def boom(self):

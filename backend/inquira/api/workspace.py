@@ -94,6 +94,7 @@ class ModelsIn(BaseModel):
     provider: str
     api_key: str | None = Field(None, max_length=500)
     base_url: str | None = Field(None, max_length=500)
+    refresh: bool = False
 
 
 @router.post("/settings/llm/models")
@@ -109,9 +110,10 @@ def list_llm_models(body: ModelsIn, _: User = Depends(admin_user), db: Session =
         curated = [asdict(m) for m in provider_cls.curated_models()]
         hint = None if e.code == "llm_not_configured" else e.message
         return {"models": curated, "source": "curated", "message": hint, "default_model": provider_cls.default_model}
-    models, source, message = llm.list_models()
-    return {"models": [asdict(m) for m in models], "source": source, "message": message,
-            "default_model": provider_cls.default_model}
+    models, source, message = llm.list_models(refresh=body.refresh)
+    ids = [m.id for m in models]
+    default = provider_cls.default_model if provider_cls.default_model in ids or not ids else ids[0]
+    return {"models": [asdict(m) for m in models], "source": source, "message": message, "default_model": default}
 
 
 @router.put("/settings/llm")

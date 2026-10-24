@@ -120,12 +120,13 @@ read-only access in three layers, and your database permissions should be the fo
 
 | Provider | Default model | Notes |
 |---|---|---|
-| Google Gemini | `gemini-2.5-flash` | Fast, inexpensive, free tier |
+| Google Gemini | `gemini-3.6-flash` | Fast, inexpensive, free tier. New accounts can't use Gemini 2.5 |
 | Anthropic | `claude-sonnet-5-5` | Strong reasoning on complex schemas |
 | OpenAI | `gpt-4.1-mini` | |
 | OpenAI-compatible | `llama3.1:8b` | Ollama, vLLM, LM Studio, Groq, Together, OpenRouter… |
 
-Configure models in the UI, or via `INQUIRA_LLM_PROVIDER` / `INQUIRA_LLM_MODEL` / `INQUIRA_LLM_API_KEY` for GitOps.
+The model picker only lists models **your key can actually call**: each candidate gets a tiny test request, so
+restricted, retired, or zero-quota models are hidden. Configure models in the UI, or via `INQUIRA_LLM_PROVIDER` / `INQUIRA_LLM_MODEL` / `INQUIRA_LLM_API_KEY` for GitOps.
 
 ## How it works
 

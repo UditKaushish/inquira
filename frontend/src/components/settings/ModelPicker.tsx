@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
 import clsx from "clsx";
@@ -42,10 +42,15 @@ export function ModelPicker({
   // Only query with a typed key once it looks complete, and not on every keystroke.
   const key = useDebounced(apiKey.trim().length >= 20 ? apiKey.trim() : "", 600);
   const url = useDebounced(baseUrl.trim(), 600);
+  const forceRefresh = useRef(false);
 
   const models = useQuery({
     queryKey: ["llm-models", provider, key, url, hasStoredKey],
-    queryFn: () => api.llmModels({ provider, ...(key ? { api_key: key } : {}), ...(url ? { base_url: url } : {}) }),
+    queryFn: () => {
+      const refresh = forceRefresh.current;
+      forceRefresh.current = false;
+      return api.llmModels({ provider, refresh, ...(key ? { api_key: key } : {}), ...(url ? { base_url: url } : {}) });
+    },
     // Cache successful live lists; never cache a fallback/failure, so a fixed key or
     // provider-side change is picked up on the next focus, mount, or keystroke.
     staleTime: (q) => (q.state.data?.source === "live" ? 5 * 60_000 : 0),
@@ -68,11 +73,11 @@ export function ModelPicker({
 
   const status = models.isFetching ? (
     <span className="inline-flex items-center gap-1.5 text-muted">
-      <Spinner className="h-3 w-3" label="Loading models" /> Loading models from {providerLabel}…
+      <Spinner className="h-3 w-3" label="Loading models" /> Checking which {providerLabel} models your key can use…
     </span>
   ) : models.data?.source === "live" ? (
     <span className="inline-flex items-center gap-1.5 text-success">
-      <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {options.length} models available to your key
+      <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {options.length} models verified for your key
     </span>
   ) : models.data?.message ? (
     <span className="inline-flex items-center gap-1.5 text-warning">
@@ -90,7 +95,10 @@ export function ModelPicker({
       aside={
         <button
           type="button"
-          onClick={() => models.refetch()}
+          onClick={() => {
+            forceRefresh.current = true; // bypass the server-side availability cache
+            models.refetch();
+          }}
           disabled={models.isFetching}
           className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50"
           aria-label="Refresh model list"

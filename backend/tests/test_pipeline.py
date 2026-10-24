@@ -166,3 +166,46 @@ def test_sqlite_demo_fallback_used_on_serverless(tmp_path, monkeypatch):
     assert sum(r[1] for r in out.result["rows"]) == 99441
     revenue = wh.execute("SELECT ROUND(SUM(price), 2) FROM order_items", 10, 30).rows[0][0]
     assert revenue == 13591643.7  # numeric affinity: prices are numbers, same total as the DuckDB demo
+
+
+class _Err(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+def test_unavailable_model_classification():
+    from inquira.engine.llm.providers import _is_unavailable_error as bad
+
+    assert bad(_Err(404, "This model models/gemini-2.5-flash-lite is no longer available to new users."))
+    assert bad(_Err(404, "models/x is not found for API version v1beta"))
+    assert bad(_Err(429, "Quota exceeded for metric: free_tier_requests, limit: 0, model: gemini-4-argon"))
+    # Never hide a working model because of transient or unrelated errors:
+    assert not bad(_Err(429, "Quota exceeded for metric: requests, limit: 15. Please retry in 20s."))
+    assert not bad(_Err(504, "Deadline expired before operation could complete."))
+    assert not bad(_Err(400, "Thinking level MINIMAL is not supported for this model."[:-len("model.")]))
+
+
+def test_list_models_shows_only_probed_available(monkeypatch):
+    from inquira.engine.llm import providers
+    from inquira.engine.llm.providers import GeminiProvider, ModelInfo
+
+    providers._probe_cache.clear()
+    listed = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-4-argon", "gemini-3.6-flash", "gemini-flash-latest"]
+    verdicts = {
+        "gemini-2.5-flash": _Err(404, "no longer available to new users"),
+        "gemini-4-argon": _Err(429, "free tier, limit: 0, model: gemini-4-argon"),
+        "gemini-flash-latest": _Err(504, "Deadline expired"),  # inconclusive -> kept
+    }
+    monkeypatch.setattr(GeminiProvider, "_list_models", lambda self: [ModelInfo(m) for m in listed])
+
+    def probe(self, model_id):
+        if model_id in verdicts:
+            raise verdicts[model_id]
+
+    monkeypatch.setattr(GeminiProvider, "_probe", probe)
+    models, source, _ = GeminiProvider(LLMConfig("gemini", "", "AIzaTEST")).list_models()
+    ids = [m.id for m in models]
+    assert source == "live"
+    assert ids[0] == "gemini-3.6-flash"  # recommended default first
+    assert set(ids) == {"gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"}
