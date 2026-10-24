@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens: RGB channels so Tailwind can apply alpha. */
+:root,
+:root[data-theme="light"] {
+  --bg: 250 250 250;
+  --surface: 255 255 255;
+  --surface-2: 244 244 245;
+  --border: 228 228 231;
+  --text: 24 24 27;
+  --text-muted: 99 99 108;
+  --accent: 91 91 214;
+  --accent-fg: 255 255 255;
+  --success: 22 128 74;
+  --warning: 178 105 0;
+  --danger: 205 43 49;
+  --chart-1: 91 91 214;
+  --chart-2: 14 147 132;
+  --chart-3: 214 120 26;
+  --chart-4: 199 62 120;
+  --chart-5: 62 130 214;
+  --chart-6: 120 120 128;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: 12 12 14;
+  --surface: 20 20 23;
+  --surface-2: 30 30 34;
+  --border: 44 44 50;
+  --text: 237 237 240;
+  --text-muted: 160 160 170;
+  --accent: 132 132 240;
+  --accent-fg: 14 14 30;
+  --success: 74 196 128;
+  --warning: 236 170 64;
+  --danger: 240 100 104;
+  --chart-1: 132 132 240;
+  --chart-2: 56 196 176;
+  --chart-3: 240 160 80;
+  --chart-4: 236 110 160;
+  --chart-5: 100 170 245;
+  --chart-6: 160 160 170;
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg text-text font-sans antialiased;
+    font-feature-settings: "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: rgb(var(--accent) / 0.22);
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--border)) transparent;
+  }
+}
+
+@layer components {
+  .hairline {
+    @apply border border-border;
+  }
+  .label {
+    @apply text-[13px] font-medium text-text;
+  }
+  .help {
+    @apply text-xs text-muted;
+  }
+  .prose-answer p + p {
+    @apply mt-2;
+  }
+  .prose-answer ul {
+    @apply my-2 list-disc space-y-1 pl-5;
+  }
+  .prose-answer ol {
+    @apply my-2 list-decimal space-y-1 pl-5;
+  }
+  .prose-answer code {
+    @apply rounded bg-surface-2 px-1 py-0.5 font-mono text-[0.85em];
+  }
+  .prose-answer strong {
+    @apply font-semibold;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

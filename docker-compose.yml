@@ -1,0 +1,48 @@
+# Production-like stack: nginx (web) → API (4 workers) → Postgres (metadata) + Redis (shared rate limits).
+#   cp .env.example .env   # then set INQUIRA_SECRET_KEY
+#   docker compose up -d   # open http://localhost:8080
+name: inquira
+
+services:
+  web:
+    build: { context: ./frontend }
+    ports: ["${INQUIRA_PORT:-8080}:8080"]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+  api:
+    build: { context: ., dockerfile: backend/Dockerfile }
+    env_file: .env
+    environment:
+      INQUIRA_DATABASE_URL: postgresql+psycopg://inquira:${POSTGRES_PASSWORD:-inquira}@db:5432/inquira
+      INQUIRA_REDIS_URL: redis://redis:6379/0
+      INQUIRA_CORS_ORIGINS: http://localhost:${INQUIRA_PORT:-8080}
+      INQUIRA_COOKIE_SECURE: ${INQUIRA_COOKIE_SECURE:-false}  # set true behind HTTPS
+    volumes: [inquira-data:/var/lib/inquira]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: inquira
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-inquira}
+      POSTGRES_DB: inquira
+    volumes: [pg-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inquira"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
+volumes:
+  inquira-data:
+  pg-data:

@@ -1,0 +1,99 @@
+from fastapi.testclient import TestClient
+
+from inquira.core.security import decrypt_secret, encrypt_secret, hash_password, verify_password
+from inquira.db import AppSetting, SessionLocal
+from inquira.main import app
+
+API = "/api/v1"
+
+
+def test_health(client):
+    assert client.get(f"{API}/health").json()["status"] == "ok"
+
+
+def test_csrf_header_required(client):
+    with TestClient(app) as bare:
+        r = bare.post(f"{API}/auth/login", json={"email": "a@b.co", "password": "x"})
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "csrf"
+
+
+def test_first_admin_only_once(client, admin):
+    assert admin["role"] == "admin"
+    with TestClient(app, headers={"X-Inquira-Client": "web"}) as other:
+        r = other.post(f"{API}/setup/admin", json={"name": "Eve", "email": "eve@example.com",
+                                                   "password": "another-password"})
+    assert r.status_code == 409
+
+
+def test_protected_endpoints_require_auth(client, admin):
+    with TestClient(app, headers={"X-Inquira-Client": "web"}) as anon:
+        for method, path in [("get", "/users"), ("get", "/settings"), ("get", "/audit"),
+                             ("post", "/settings/datasource/demo"), ("get", "/conversations")]:
+            r = getattr(anon, method)(f"{API}{path}")
+            assert r.status_code == 401, path
+
+
+def test_member_cannot_do_admin_things(client, admin):
+    r = client.post(f"{API}/users", json={"name": "Bob", "email": "bob@example.com",
+                                          "password": "bob-password-1", "role": "member"})
+    assert r.status_code == 200
+    with TestClient(app, headers={"X-Inquira-Client": "web"}) as bob:
+        assert bob.post(f"{API}/auth/login", json={"email": "bob@example.com",
+                                                   "password": "bob-password-1"}).status_code == 200
+        assert bob.get(f"{API}/users").status_code == 403
+        assert bob.put(f"{API}/settings/llm", json={"provider": "gemini", "api_key": "x"}).status_code == 403
+        assert bob.patch(f"{API}/users/{admin['id']}", json={"role": "member"}).status_code == 403
+        # Responses never leak password hashes.
+        assert "password" not in bob.get(f"{API}/auth/me").text
+
+
+def test_bad_login_is_generic(client, admin):
+    r1 = client.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "wrong-password"})
+    r2 = client.post(f"{API}/auth/login", json={"email": "nobody@example.com", "password": "wrong-password"})
+    assert r1.status_code == r2.status_code == 401
+    assert r1.json() == r2.json()
+
+
+def test_logout_revokes_session(admin):
+    with TestClient(app, headers={"X-Inquira-Client": "web"}) as c:
+        c.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "correct-horse-1"})
+        stolen = c.cookies.get("inquira_session")
+        assert c.post(f"{API}/auth/logout").status_code == 200
+    with TestClient(app, headers={"X-Inquira-Client": "web"}, cookies={"inquira_session": stolen}) as attacker:
+        assert attacker.get(f"{API}/auth/me").status_code == 401
+    # log the shared admin client back in for later tests
+    with TestClient(app, headers={"X-Inquira-Client": "web"}) as c:
+        assert c.post(f"{API}/auth/login", json={"email": "ada@example.com",
+                                                 "password": "correct-horse-1"}).status_code == 200
+
+
+def test_llm_key_is_encrypted_and_never_returned(client, admin):
+    client.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "correct-horse-1"})
+    r = client.put(f"{API}/settings/llm", json={"provider": "gemini", "model": "gemini-2.5-flash",
+                                                "api_key": "AIzaSECRET-test-key-123"})
+    assert r.status_code == 200, r.text
+    assert r.json()["llm"]["has_key"] is True
+    assert "AIzaSECRET" not in client.get(f"{API}/settings").text
+    with SessionLocal() as db:
+        row = db.get(AppSetting, "llm")
+        assert "AIzaSECRET" not in (row.secret or "") and "AIzaSECRET" not in str(row.value)
+
+
+def test_demo_datasource_and_schema(client, admin):
+    client.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "correct-horse-1"})
+    assert client.post(f"{API}/settings/datasource/demo").status_code == 200
+    tables = {t["name"] for t in client.get(f"{API}/schema").json()["tables"]}
+    assert {"orders", "customers", "order_items", "products", "sellers", "order_payments"} <= tables
+    assert client.get(f"{API}/setup/status").json()["completed"] is True
+    assert len(client.get(f"{API}/knowledge").json()["documents"]) > 0
+
+
+def test_security_primitives():
+    h = hash_password("hunter2-hunter2")
+    assert h.startswith("$argon2id$")
+    assert verify_password("hunter2-hunter2", h)
+    assert not verify_password("nope", h)
+    assert not verify_password("anything", None)
+    assert decrypt_secret(encrypt_secret("s3cret")) == "s3cret"
+    assert decrypt_secret("garbage") is None
