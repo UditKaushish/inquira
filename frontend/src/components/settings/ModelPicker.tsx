@@ -46,7 +46,11 @@ export function ModelPicker({
   const models = useQuery({
     queryKey: ["llm-models", provider, key, url, hasStoredKey],
     queryFn: () => api.llmModels({ provider, ...(key ? { api_key: key } : {}), ...(url ? { base_url: url } : {}) }),
-    staleTime: 5 * 60_000,
+    // Cache successful live lists; never cache a fallback/failure, so a fixed key or
+    // provider-side change is picked up on the next focus, mount, or keystroke.
+    staleTime: (q) => (q.state.data?.source === "live" ? 5 * 60_000 : 0),
+    gcTime: 5 * 60_000,
+    refetchOnWindowFocus: true,
     retry: false,
   });
 
