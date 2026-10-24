@@ -144,3 +144,17 @@ def test_model_listing_live_and_fallback(client, admin, monkeypatch):
     with TestClient(app, headers={"X-Inquira-Client": "web"}) as bob:
         bob.post(f"{API}/auth/login", json={"email": "bob@example.com", "password": "bob-password-1"})
         assert bob.post(f"{API}/settings/llm/models", json={"provider": "gemini"}).status_code == 403
+
+
+def test_edit_knowledge(client, admin):
+    client.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "correct-horse-1"})
+    doc = client.post(f"{API}/knowledge", json={"title": "GMV", "kind": "glossary", "content": "old"}).json()["document"]
+    r = client.patch(f"{API}/knowledge/{doc['id']}", json={"content": "  Gross merchandise value  ", "kind": "metric"})
+    assert r.status_code == 200
+    updated = r.json()["document"]
+    assert updated["content"] == "Gross merchandise value" and updated["kind"] == "metric" and updated["title"] == "GMV"
+    assert client.patch(f"{API}/knowledge/{doc['id']}", json={"title": ""}).status_code == 422
+    assert client.patch(f"{API}/knowledge/missing", json={"title": "x"}).status_code == 404
+    with TestClient(app, headers={"X-Inquira-Client": "web"}) as bob:
+        bob.post(f"{API}/auth/login", json={"email": "bob@example.com", "password": "bob-password-1"})
+        assert bob.patch(f"{API}/knowledge/{doc['id']}", json={"title": "hijack"}).status_code == 403

@@ -44,6 +44,12 @@ class KnowledgeIn(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
 
 
+class KnowledgePatchIn(BaseModel):
+    title: str | None = Field(None, min_length=1, max_length=200)
+    kind: Literal["metric", "glossary", "note"] | None = None
+    content: str | None = Field(None, min_length=1, max_length=20_000)
+
+
 def _spec(cls: Any, llm: bool) -> dict[str, Any]:
     spec = {"id": cls.id if llm else cls.kind, "label": cls.label, "description": cls.description,
             "fields": [{k: v for k, v in asdict(f).items() if v is not None} for f in cls.fields]}
@@ -208,6 +214,22 @@ def _doc_json(d: KnowledgeDoc) -> dict:
 def add_knowledge(body: KnowledgeIn, user: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     doc = KnowledgeDoc(title=body.title.strip(), kind=body.kind, content=body.content.strip(), created_by=user.id)
     db.add(doc)
+    db.commit()
+    return {"document": _doc_json(doc)}
+
+
+@router.patch("/knowledge/{doc_id}")
+def update_knowledge(doc_id: str, body: KnowledgePatchIn, _: User = Depends(admin_user),
+                     db: Session = Depends(get_db)) -> dict:
+    doc = db.get(KnowledgeDoc, doc_id)
+    if doc is None:
+        raise not_found("Document")
+    if body.title is not None:
+        doc.title = body.title.strip()
+    if body.kind is not None:
+        doc.kind = body.kind
+    if body.content is not None:
+        doc.content = body.content.strip()
     db.commit()
     return {"document": _doc_json(doc)}
 

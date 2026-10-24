@@ -165,6 +165,7 @@ export interface KnowledgeDoc {
   id: string | number;
   title: string;
   kind: KnowledgeKind;
+  content: string;
   chars: number;
   created_at: string;
 }

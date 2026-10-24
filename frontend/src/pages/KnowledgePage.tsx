@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Trash2 } from "lucide-react";
+import { BookOpen, ChevronRight, Pencil, Trash2 } from "lucide-react";
+import clsx from "clsx";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import type { KnowledgeKind } from "@/lib/types";
+import type { KnowledgeDoc, KnowledgeKind } from "@/lib/types";
 import { timeAgo, formatNumber } from "@/lib/format";
 import { useMe } from "@/hooks/useSession";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -98,31 +99,131 @@ export default function KnowledgePage() {
       ) : (
         <Card className="divide-y divide-border">
           {docs.data.documents.map((d) => (
-            <div key={d.id} className="flex items-center gap-3 px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{d.title}</span>
-                  <Badge tone={tone[d.kind]}>{kinds.find((k) => k.id === d.kind)?.label ?? d.kind}</Badge>
-                </div>
-                <div className="mt-0.5 text-[12px] text-muted">
-                  {formatNumber(d.chars)} characters · added {timeAgo(d.created_at)}
-                </div>
-              </div>
-              {isAdmin && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`Delete ${d.title}`}
-                  onClick={async () => {
-                    if (await confirm({ title: "Delete entry?", description: `“${d.title}” will no longer be used as context.`, confirmLabel: "Delete", danger: true })) remove.mutate(d.id);
-                  }}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
+            <KnowledgeRow key={d.id} doc={d} isAdmin={isAdmin} onDelete={async () => {
+              if (await confirm({ title: "Delete entry?", description: `“${d.title}” will no longer be used as context.`, confirmLabel: "Delete", danger: true })) remove.mutate(d.id);
+            }} />
           ))}
         </Card>
+      )}
+    </div>
+  );
+}
+
+function KnowledgeRow({ doc, isAdmin, onDelete }: { doc: KnowledgeDoc; isAdmin: boolean; onDelete: () => void }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(doc.title);
+  const [kind, setKind] = useState<KnowledgeKind>(doc.kind);
+  const [content, setContent] = useState(doc.content);
+
+  const startEdit = () => {
+    setTitle(doc.title);
+    setKind(doc.kind);
+    setContent(doc.content);
+    setOpen(true);
+    setEditing(true);
+  };
+  const save = useMutation({
+    mutationFn: () => api.updateKnowledge(doc.id, { title: title.trim(), kind, content: content.trim() }),
+    onSuccess: () => {
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["knowledge"] });
+      toast.success("Entry updated");
+    },
+  });
+  const dirty = title.trim() !== doc.title || kind !== doc.kind || content.trim() !== doc.content;
+  const panelId = `kn-panel-${doc.id}`;
+
+  return (
+    <div>
+      <div className="flex items-center gap-1 pr-2">
+        <button
+          type="button"
+          onClick={() => !editing && setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-controls={panelId}
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors duration-150 hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <ChevronRight className={clsx("h-4 w-4 shrink-0 text-muted transition-transform duration-150", open && "rotate-90")} aria-hidden />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-sm font-medium">{doc.title}</span>
+              <Badge tone={tone[doc.kind]}>{kinds.find((k) => k.id === doc.kind)?.label ?? doc.kind}</Badge>
+            </div>
+            <div className="mt-0.5 text-[12px] text-muted">
+              {open ? "Click to collapse" : <span className="block truncate">{doc.content}</span>}
+            </div>
+          </div>
+        </button>
+        {isAdmin && !editing && (
+          <Button variant="ghost" size="icon" aria-label={`Edit ${doc.title}`} onClick={startEdit}>
+            <Pencil className="h-4 w-4" />
+          </Button>
+        )}
+        {isAdmin && (
+          <Button variant="ghost" size="icon" aria-label={`Delete ${doc.title}`} onClick={onDelete}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        )}
+      </div>
+
+      {open && (
+        <div id={panelId} className="px-4 pb-4 pl-11">
+          {editing ? (
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                save.mutate();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setEditing(false);
+              }}
+            >
+              <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
+                <Field label="Title" htmlFor={`kn-title-${doc.id}`}>
+                  <Input id={`kn-title-${doc.id}`} value={title} onChange={(e) => setTitle(e.target.value)} required autoFocus />
+                </Field>
+                <Field label="Type" htmlFor={`kn-kind-${doc.id}`}>
+                  <Select id={`kn-kind-${doc.id}`} value={kind} onChange={(e) => setKind(e.target.value as KnowledgeKind)}>
+                    {kinds.map((k) => (
+                      <option key={k.id} value={k.id}>
+                        {k.label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+              <Field label="Content" htmlFor={`kn-content-${doc.id}`}>
+                <Textarea id={`kn-content-${doc.id}`} rows={5} value={content} onChange={(e) => setContent(e.target.value)} required />
+              </Field>
+              {save.isError && <Callout tone="danger">{save.error.message}</Callout>}
+              <div className="flex gap-2">
+                <Button type="submit" loading={save.isPending} disabled={!dirty || !title.trim() || !content.trim()}>
+                  Save changes
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => setEditing(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <p className="whitespace-pre-wrap rounded-lg bg-surface-2/60 px-3 py-2.5 text-[13px] leading-relaxed text-text">{doc.content}</p>
+              <div className="mt-2 flex items-center gap-3 text-[12px] text-muted">
+                <span>
+                  {formatNumber(doc.chars)} characters · added {timeAgo(doc.created_at)}
+                </span>
+                {isAdmin && (
+                  <button type="button" onClick={startEdit} className="font-medium text-accent hover:underline">
+                    Edit
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

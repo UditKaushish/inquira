@@ -117,6 +117,8 @@ export const api = {
 
   knowledge: () => get<{ documents: KnowledgeDoc[] }>("/knowledge"),
   addKnowledge: (b: { title: string; kind: KnowledgeKind; content: string }) => post<{ document: KnowledgeDoc }>("/knowledge", b),
+  updateKnowledge: (id: KnowledgeDoc["id"], b: { title?: string; kind?: KnowledgeKind; content?: string }) =>
+    patch<{ document: KnowledgeDoc }>(`/knowledge/${id}`, b),
   deleteKnowledge: (id: KnowledgeDoc["id"]) => del<Ok>(`/knowledge/${id}`),
 
   audit: (limit = 100) => get<{ events: AuditEvent[] }>(`/audit?limit=${limit}`),

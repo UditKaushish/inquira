@@ -24,3 +24,7 @@ var/
 .DS_Store
 .idea/
 .vscode/
+
+# Research workspace
+research_notes/
+reports/
