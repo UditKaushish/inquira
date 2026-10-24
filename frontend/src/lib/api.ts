@@ -7,6 +7,7 @@ import type {
   KnowledgeKind,
   LlmInput,
   LlmSettings,
+  ModelList,
   Providers,
   Rating,
   Role,
@@ -96,6 +97,8 @@ export const api = {
 
   settings: () => get<Settings>("/settings"),
   providers: () => get<Providers>("/settings/providers"),
+  llmModels: (b: { provider: string; api_key?: string; base_url?: string }) =>
+    post<ModelList>("/settings/llm/models", b),
   testLlm: (b: LlmInput) => post<TestResult>("/settings/llm/test", b),
   saveLlm: (b: LlmInput) => put<{ llm: LlmSettings }>("/settings/llm", b),
   testDatasource: (b: { kind: string; config: Record<string, string> }) => post<TestResult>("/settings/datasource/test", b),

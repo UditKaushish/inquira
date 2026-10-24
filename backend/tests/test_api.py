@@ -119,3 +119,28 @@ def test_bad_llm_key_is_rejected_on_save(client, admin, monkeypatch):
     mismatch = client.put(f"{API}/settings/llm", json={"provider": "openai", "api_key": "sk-ant-api03-xyz"})
     assert mismatch.status_code == 400 and mismatch.json()["error"]["code"] == "key_provider_mismatch"
     assert client.get(f"{API}/settings").json()["llm"] == before  # nothing was saved
+
+
+def test_model_listing_live_and_fallback(client, admin, monkeypatch):
+    from inquira.engine.llm.providers import AnthropicProvider, ModelInfo
+
+    client.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "correct-horse-1"})
+    # No key yet: curated suggestions, no error.
+    r = client.post(f"{API}/settings/llm/models", json={"provider": "anthropic"}).json()
+    assert r["source"] == "curated" and r["message"] is None and r["default_model"]
+    assert any(m["id"] == r["default_model"] for m in r["models"])
+    # With a key: live list from the provider API.
+    monkeypatch.setattr(AnthropicProvider, "_list_models",
+                        lambda self: [ModelInfo("claude-new-1", "Claude New"), ModelInfo("claude-old-0")])
+    r = client.post(f"{API}/settings/llm/models", json={"provider": "anthropic", "api_key": "sk-ant-api03-x"}).json()
+    assert r["source"] == "live" and [m["id"] for m in r["models"]] == ["claude-new-1", "claude-old-0"]
+    # Provider API failing: fall back to curated with a readable reason.
+    def boom(self):
+        raise RuntimeError("connection reset")
+    monkeypatch.setattr(AnthropicProvider, "_list_models", boom)
+    r = client.post(f"{API}/settings/llm/models", json={"provider": "anthropic", "api_key": "sk-ant-api03-x"}).json()
+    assert r["source"] == "curated" and "Anthropic" in r["message"]
+    # Members can't enumerate with the stored key.
+    with TestClient(app, headers={"X-Inquira-Client": "web"}) as bob:
+        bob.post(f"{API}/auth/login", json={"email": "bob@example.com", "password": "bob-password-1"})
+        assert bob.post(f"{API}/settings/llm/models", json={"provider": "gemini"}).status_code == 403

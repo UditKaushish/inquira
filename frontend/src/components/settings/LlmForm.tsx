@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, Cpu, Gem, Lock, Sparkle } from "lucide-react";
 import { api } from "@/lib/api";
@@ -8,6 +8,7 @@ import { Button } from "../ui/Button";
 import { Field, Input } from "../ui/Input";
 import { Badge } from "../ui/Badge";
 import { Callout } from "../ui/Callout";
+import { ModelPicker } from "./ModelPicker";
 
 const KEY_PREFIXES: Array<[string, string]> = [["sk-ant-", "anthropic"], ["AIza", "gemini"], ["sk-", "openai"]];
 
@@ -30,7 +31,6 @@ export function LlmForm({ current, onSaved, submitLabel = "Save and continue" }:
   const [test, setTest] = useState<TestResult | null>(null);
   const [switchedNote, setSwitchedNote] = useState<string | null>(null);
   const pendingKey = useRef<string | null>(null);
-  const listId = useId();
 
   const list = providers.data?.llm ?? [];
   const spec = list.find((p) => p.id === provider);
@@ -107,14 +107,6 @@ export function LlmForm({ current, onSaved, submitLabel = "Save and continue" }:
 
       {spec && (
         <div className="space-y-4">
-          <Field label="Model" htmlFor="llm-model" help="Pick a suggestion or type any model id your provider supports.">
-            <Input id="llm-model" list={listId} value={model} onChange={(e) => { setTest(null); setModel(e.target.value); }} required spellCheck={false} />
-            <datalist id={listId}>
-              {(spec.models ?? []).map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          </Field>
           {keyField && (
             <Field
               label={keyField.required ? keyField.label : `${keyField.label} (optional)`}
@@ -155,6 +147,16 @@ export function LlmForm({ current, onSaved, submitLabel = "Save and continue" }:
               <Input id="llm-url" value={baseUrl} onChange={(e) => { setTest(null); setBaseUrl(e.target.value); }} placeholder={urlField.placeholder} required={urlField.required} spellCheck={false} />
             </Field>
           )}
+          <ModelPicker
+            provider={provider}
+            providerLabel={spec.label}
+            apiKey={apiKey}
+            baseUrl={baseUrl}
+            hasStoredKey={isCurrent && !!current?.has_key}
+            value={model}
+            onChange={(m) => { setTest(null); setModel(m); }}
+          />
+
         </div>
       )}
 

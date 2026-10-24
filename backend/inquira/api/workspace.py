@@ -84,6 +84,30 @@ def test_llm(body: LlmIn, _: User = Depends(admin_user), db: Session = Depends(g
     return {"ok": True, "message": f"Connected to {llm.label} ({llm.config.model})", "latency_ms": latency}
 
 
+class ModelsIn(BaseModel):
+    provider: str
+    api_key: str | None = Field(None, max_length=500)
+    base_url: str | None = Field(None, max_length=500)
+
+
+@router.post("/settings/llm/models")
+def list_llm_models(body: ModelsIn, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
+    """Models available to this provider/key, live from the provider API when possible."""
+    provider_cls = PROVIDERS.get(body.provider)
+    if provider_cls is None:
+        raise ApiError(400, "bad_request", f"Unknown LLM provider: {body.provider}")
+    cfg = _llm_from_body(LlmIn(provider=body.provider, api_key=body.api_key, base_url=body.base_url), db)
+    try:
+        llm = build_llm(cfg)
+    except ApiError as e:  # e.g. no key yet: still offer the curated list
+        curated = [asdict(m) for m in provider_cls.curated_models()]
+        hint = None if e.code == "llm_not_configured" else e.message
+        return {"models": curated, "source": "curated", "message": hint, "default_model": provider_cls.default_model}
+    models, source, message = llm.list_models()
+    return {"models": [asdict(m) for m in models], "source": source, "message": message,
+            "default_model": provider_cls.default_model}
+
+
 @router.put("/settings/llm")
 def save_llm(body: LlmIn, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     cfg = _llm_from_body(body, db)

@@ -54,6 +54,7 @@ and send a signed-in admin to the remaining wizard steps while `completed` is fa
 |---|---|---|---|
 | GET | `/settings` | – | `{llm: LlmSettings \| null, datasource: DatasourceSettings \| null}` |
 | GET | `/settings/providers` | – | `{llm: [ProviderSpec], datasource: [ProviderSpec]}` |
+| POST | `/settings/llm/models` | `{provider, api_key?, base_url?}` | `{models: [{id, label}], source: "live" \| "curated", message, default_model}`. Lists models live from the provider API (using the typed or stored key), falling back to curated suggestions. |
 | POST | `/settings/llm/test` | `{provider, model, api_key?, base_url?}` | `{ok, message, latency_ms}` |
 | PUT | `/settings/llm` | `{provider, model, api_key?, base_url?}` | `{llm: LlmSettings}` (omit `api_key` to keep the stored one) |
 | POST | `/settings/datasource/test` | `{kind, config}` | `{ok, message, table_count}` |

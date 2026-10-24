@@ -30,6 +30,17 @@ class LLMConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class ModelInfo:
+    id: str
+    label: str | None = None
+
+
+def _version_key(model_id: str) -> tuple[float, str]:
+    m = re.search(r"(\d+(?:\.\d+)?)", model_id)
+    return (-float(m.group(1)) if m else 0.0, model_id)
+
+
 class LLMProvider(ABC):
     id: ClassVar[str]
     label: ClassVar[str]
@@ -44,6 +55,26 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def _complete(self, system: str, prompt: str) -> str: ...
+
+    def _list_models(self) -> list[ModelInfo]:
+        """Live model listing from the provider API. Override per provider."""
+        raise NotImplementedError
+
+    @classmethod
+    def curated_models(cls) -> list[ModelInfo]:
+        return [ModelInfo(m) for m in cls.models]
+
+    def list_models(self) -> tuple[list[ModelInfo], str, str | None]:
+        """Returns (models, source, message). Falls back to the curated list on any failure."""
+        try:
+            live = self._list_models()
+        except NotImplementedError:
+            return self.curated_models(), "curated", None
+        except Exception as e:
+            return self.curated_models(), "curated", _friendly_error(self.label, e)
+        if not live:
+            return self.curated_models(), "curated", f"{self.label} returned no usable chat models."
+        return live, "live", None
 
     def complete_json(self, system: str, prompt: str) -> dict[str, Any]:
         try:
@@ -112,7 +143,22 @@ class GeminiProvider(LLMProvider):
     label = "Google Gemini"
     description = "Fast and cost-effective. A generous free tier is available from Google AI Studio."
     default_model = "gemini-2.5-flash"
-    models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"]
+    models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-3.5-flash"]
+    # Models that can't do text-to-JSON chat (speech, image, music, agents, ...).
+    _EXCLUDE = re.compile(r"tts|image|banana|lyria|transcribe|robotics|computer-use|antigravity|deep-research|"
+                          r"customtools|embedding|aqa|imagen|veo|omni|live|audio", re.I)
+
+    def _list_models(self) -> list[ModelInfo]:
+        from google import genai
+
+        client = genai.Client(api_key=self.config.api_key)
+        out = []
+        for m in client.models.list():
+            mid = (m.name or "").removeprefix("models/")
+            actions = getattr(m, "supported_actions", None) or []
+            if "generateContent" in actions and mid.startswith(("gemini", "gemma")) and not self._EXCLUDE.search(mid):
+                out.append(ModelInfo(mid, m.display_name or None))
+        return sorted(out, key=lambda m: (m.id.startswith("gemma"), *_version_key(m.id)))
 
     def _complete(self, system: str, prompt: str) -> str:
         from google import genai
@@ -137,7 +183,13 @@ class AnthropicProvider(LLMProvider):
     label = "Anthropic Claude"
     description = "Excellent at reasoning over complex schemas and multi-step analytics."
     default_model = "claude-sonnet-5-5"
-    models = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"]
+    models = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"]
+
+    def _list_models(self) -> list[ModelInfo]:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=self.config.api_key, timeout=20)
+        return [ModelInfo(m.id, getattr(m, "display_name", None)) for m in client.models.list(limit=100)]
 
     def _complete(self, system: str, prompt: str) -> str:
         import anthropic
@@ -157,12 +209,19 @@ class OpenAIProvider(LLMProvider):
     label = "OpenAI"
     description = "GPT models via the OpenAI API."
     default_model = "gpt-4.1-mini"
-    models = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"]
+    models = ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"]
+    _INCLUDE = re.compile(r"^(gpt-|o\d|chatgpt-)", re.I)
+    _EXCLUDE = re.compile(r"audio|realtime|tts|transcribe|search|image|embedding|instruct|codex|moderation", re.I)
 
     def _client(self) -> Any:
         from openai import OpenAI
 
         return OpenAI(api_key=self.config.api_key, base_url=self.config.base_url, timeout=self.timeout_seconds)
+
+    def _list_models(self) -> list[ModelInfo]:
+        ids = [m.id for m in self._client().models.list()]
+        chat = [i for i in ids if self._INCLUDE.search(i) and not self._EXCLUDE.search(i)]
+        return [ModelInfo(i) for i in sorted(chat, key=_version_key)]
 
     def _complete(self, system: str, prompt: str) -> str:
         resp = self._client().chat.completions.create(
@@ -191,6 +250,9 @@ class OpenAICompatibleProvider(OpenAIProvider):
         return OpenAI(
             api_key=self.config.api_key or "not-needed", base_url=self.config.base_url, timeout=self.timeout_seconds
         )
+
+    def _list_models(self) -> list[ModelInfo]:
+        return [ModelInfo(m.id) for m in self._client().models.list()]
 
     def _complete(self, system: str, prompt: str) -> str:
         # Many local servers don't support response_format; rely on the prompt instead.

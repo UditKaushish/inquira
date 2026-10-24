@@ -190,3 +190,15 @@ export type AskEvent =
   | { event: "answer"; data: { text: string } }
   | { event: "error"; data: { code: string; message: string } }
   | { event: "done"; data: { message_id: string; conversation_id: string; elapsed_ms: number } };
+
+export interface ModelInfo {
+  id: string;
+  label: string | null;
+}
+
+export interface ModelList {
+  models: ModelInfo[];
+  source: "live" | "curated";
+  message: string | null;
+  default_model: string;
+}
