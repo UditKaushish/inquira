@@ -10,6 +10,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     INQUIRA_ENV=production \
     INQUIRA_DATA_DIR=/var/lib/inquira \
+    INQUIRA_TRUST_PROXY_HEADERS=true \
     INQUIRA_DEMO_DATA_DIR=/opt/inquira/data/olist
 RUN groupadd --system inquira && useradd --system --gid inquira --home /var/lib/inquira inquira \
     && mkdir -p /var/lib/inquira && chown inquira:inquira /var/lib/inquira
@@ -19,6 +20,6 @@ COPY data/olist /opt/inquira/data/olist
 USER inquira
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/livez')"
 CMD ["uvicorn", "inquira.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--timeout-graceful-shutdown", "30", "--timeout-keep-alive", "75"]

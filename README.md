@@ -74,7 +74,17 @@ Open **http://localhost:8080** and follow the onboarding wizard:
 3. Paste an API key ([Gemini has a free tier](https://aistudio.google.com/apikey)), or point at a local Ollama
 4. Ask your first question
 
-### Option B: Local development
+### Option B: Deploy free on Vercel
+
+1. Fork this repo and import it at [vercel.com/new](https://vercel.com/new). `vercel.json` already defines the
+   build, routes, and security headers.
+2. In the project, open **Storage → Marketplace** and add **Neon** (Postgres, free tier). It sets `DATABASE_URL`.
+   Optionally add **Upstash Redis** for rate limits shared across instances (sets `REDIS_URL`/`KV_URL`).
+3. Add an environment variable `INQUIRA_SECRET_KEY` (generate with
+   `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`).
+4. Deploy, open your `*.vercel.app` URL, and complete onboarding. Tables are created automatically.
+
+### Option C: Local development
 
 Requires Python 3.11+ (with [uv](https://docs.astral.sh/uv/)) and Node 20+.
 
@@ -98,7 +108,7 @@ automatically.
 |---|---|---|
 | Demo (Olist e-commerce) | – | 100k real anonymised orders, 6 tables, built locally in ~2s |
 | DuckDB | – | Opened with `read_only=True`, external file access disabled |
-| PostgreSQL / Supabase / Neon / Redshift | `inquira[postgres]` | `default_transaction_read_only=on`, statement timeout |
+| PostgreSQL / Supabase / Neon / Redshift | – (included) | `default_transaction_read_only=on`, statement timeout |
 | MySQL / MariaDB / PlanetScale | `inquira[mysql]` | `START TRANSACTION READ ONLY`, `max_execution_time` |
 | Snowflake | `inquira[snowflake]` | Statement timeout + query tag. Use a SELECT-only role |
 | SQLite | – | Opened with `mode=ro` |
@@ -138,18 +148,22 @@ The important ones:
 | Variable | Default | |
 |---|---|---|
 | `INQUIRA_SECRET_KEY` | auto in dev | **Required in production.** Signs sessions, encrypts stored credentials |
-| `INQUIRA_DATABASE_URL` | SQLite in `./var` | Use Postgres in production |
+| `INQUIRA_PREVIOUS_SECRET_KEYS` | – | Old keys (comma-separated) still accepted while rotating; then run `python -m inquira rotate-secrets` |
+| `INQUIRA_DATABASE_URL` | SQLite in `./var` | Use Postgres in production (`DATABASE_URL` is also accepted) |
 | `INQUIRA_REDIS_URL` | – | Shared rate limits across replicas |
 | `INQUIRA_MAX_RESULT_ROWS` | `500` | Row cap per query |
 | `INQUIRA_QUERY_TIMEOUT_SECONDS` | `30` | Statement timeout |
+| `INQUIRA_QUESTION_DEADLINE_SECONDS` | `90` | End-to-end budget per question (all AI calls + query) |
+| `INQUIRA_TRUST_PROXY_HEADERS` | `false` | Honour `X-Real-IP`/`X-Forwarded-For`; enable only behind a proxy that overwrites them |
 
 ## Project layout
 
 ```
 backend/    FastAPI service: API, NL→SQL engine, warehouse adapters, tests
 frontend/   React + TypeScript + Tailwind single-page app
-data/       Bundled demo dataset (Olist, CC BY-NC-SA 4.0)
-docs/       Architecture, API contract, reverse-engineering report
+data/       Bundled demo dataset as Parquet (Olist, CC BY-NC-SA 4.0)
+api/        Vercel serverless entry point
+docs/       Architecture, data model, API contract, reverse-engineering report
 ```
 
 ## Contributing

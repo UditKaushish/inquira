@@ -6,10 +6,14 @@ reduced to that. Adding a provider means adding one class here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import threading
 from abc import ABC, abstractmethod
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -17,6 +21,28 @@ from inquira.core.errors import ApiError
 from inquira.engine.warehouse.base import FieldSpec
 
 log = logging.getLogger(__name__)
+
+# Per-attempt timeout and retry budget. SDKs retry 408/409/429/5xx with jittered backoff and honour
+# Retry-After; the pipeline's question deadline caps the total.
+ATTEMPT_TIMEOUT_SECONDS = 30.0
+MAX_RETRIES = 2
+_RETRYABLE_STATUS = [408, 429, 500, 502, 503, 504]
+
+# SDK clients own HTTP connection pools: reuse them instead of paying TCP+TLS setup on every call.
+_clients: OrderedDict[tuple, Any] = OrderedDict()
+_clients_lock = threading.Lock()
+
+
+def _cached_client(provider: str, api_key: str | None, base_url: str | None, factory: Callable[[], Any]) -> Any:
+    key = (provider, hashlib.sha256((api_key or "").encode()).hexdigest(), base_url or "")
+    with _clients_lock:
+        if key in _clients:
+            _clients.move_to_end(key)
+            return _clients[key]
+        client = _clients[key] = factory()
+        while len(_clients) > 32:
+            _clients.popitem(last=False)
+        return client
 
 
 class LLMError(ApiError):
@@ -51,7 +77,6 @@ class LLMProvider(ABC):
     default_model: ClassVar[str]
     models: ClassVar[list[str]]
     fields: ClassVar[list[FieldSpec]] = [FieldSpec("api_key", "API key", "password", secret=True)]
-    timeout_seconds: ClassVar[float] = 60.0
 
     def __init__(self, config: LLMConfig) -> None:
         self.config = config
@@ -185,10 +210,8 @@ class GeminiProvider(LLMProvider):
                           r"customtools|embedding|aqa|imagen|veo|omni|live|audio", re.I)
 
     def _list_models(self) -> list[ModelInfo]:
-        from google import genai
-
-        client = genai.Client(api_key=self.config.api_key)
         out = []
+        client = self._client()
         for m in client.models.list():
             mid = (m.name or "").removeprefix("models/")
             actions = getattr(m, "supported_actions", None) or []
@@ -196,15 +219,24 @@ class GeminiProvider(LLMProvider):
                 out.append(ModelInfo(mid, m.display_name or None))
         return sorted(out, key=lambda m: (m.id.startswith("gemma"), *_version_key(m.id)))
 
-    def _complete(self, system: str, prompt: str) -> str:
+    def _client(self) -> Any:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(
+        # google-genai makes a single attempt unless retry options are given explicitly.
+        return _cached_client(self.id, self.config.api_key, None, lambda: genai.Client(
             api_key=self.config.api_key,
-            http_options=types.HttpOptions(timeout=int(self.timeout_seconds * 1000)),
-        )
-        resp = client.models.generate_content(
+            http_options=types.HttpOptions(
+                timeout=int(ATTEMPT_TIMEOUT_SECONDS * 1000),
+                retry_options=types.HttpRetryOptions(
+                    attempts=MAX_RETRIES + 1, initial_delay=0.5, max_delay=8, http_status_codes=_RETRYABLE_STATUS),
+            ),
+        ))
+
+    def _complete(self, system: str, prompt: str) -> str:
+        from google.genai import types
+
+        resp = self._client().models.generate_content(
             model=self.config.model,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -224,21 +256,25 @@ class AnthropicProvider(LLMProvider):
     models = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"]
 
     def _list_models(self) -> list[ModelInfo]:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=self.config.api_key, timeout=20)
+        client = self._client()
         return [ModelInfo(m.id, getattr(m, "display_name", None)) for m in client.models.list(limit=100)]
 
-    def _complete(self, system: str, prompt: str) -> str:
+    def _client(self) -> Any:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=self.config.api_key, timeout=self.timeout_seconds)
-        resp = client.messages.create(
+        return _cached_client(self.id, self.config.api_key, None, lambda: anthropic.Anthropic(
+            api_key=self.config.api_key, timeout=ATTEMPT_TIMEOUT_SECONDS, max_retries=MAX_RETRIES))
+
+    def _complete(self, system: str, prompt: str) -> str:
+        resp = self._client().messages.create(
             model=self.config.model,
-            max_tokens=4096,
+            # Generous: newer Claude models may think before answering, which counts against this.
+            max_tokens=8192,
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            log.warning("Anthropic reply hit max_tokens (model=%s); output may be truncated", self.config.model)
         return "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
 
 
@@ -256,7 +292,9 @@ class OpenAIProvider(LLMProvider):
     def _client(self) -> Any:
         from openai import OpenAI
 
-        return OpenAI(api_key=self.config.api_key, base_url=self.config.base_url, timeout=self.timeout_seconds)
+        return _cached_client(self.id, self.config.api_key, self.config.base_url, lambda: OpenAI(
+            api_key=self.config.api_key, base_url=self.config.base_url,
+            timeout=ATTEMPT_TIMEOUT_SECONDS, max_retries=MAX_RETRIES))
 
     def _list_models(self) -> list[ModelInfo]:
         ids = [m.id for m in self._client().models.list()]
@@ -288,9 +326,10 @@ class OpenAICompatibleProvider(OpenAIProvider):
     def _client(self) -> Any:
         from openai import OpenAI
 
-        return OpenAI(
-            api_key=self.config.api_key or "not-needed", base_url=self.config.base_url, timeout=self.timeout_seconds
-        )
+        # Local models can be slow to answer: give them a longer per-attempt timeout.
+        return _cached_client(self.id, self.config.api_key, self.config.base_url, lambda: OpenAI(
+            api_key=self.config.api_key or "not-needed", base_url=self.config.base_url,
+            timeout=ATTEMPT_TIMEOUT_SECONDS * 2, max_retries=MAX_RETRIES))
 
     def _list_models(self) -> list[ModelInfo]:
         return [ModelInfo(m.id) for m in self._client().models.list()]

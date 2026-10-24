@@ -124,3 +124,18 @@ def test_rejected_key_shows_provider_reason_and_format_hint():
     finally:
         mp.undo()
     assert OpenAICompatibleProvider(LLMConfig("openai_compatible", "x", "gsk_groq_key")).key_format_hint() is None
+
+
+def test_demo_build_never_touches_source_data(tmp_path, monkeypatch):
+    import hashlib
+
+    from inquira.core.config import get_settings
+    from inquira.engine import demo
+
+    src = get_settings().demo_data_dir
+    before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in src.glob("*.parquet")}
+    monkeypatch.setattr(get_settings(), "data_dir", tmp_path)
+    built = demo.ensure_demo_database()
+    assert built.parent == tmp_path and built.suffix == ".duckdb"
+    after = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in src.glob("*.parquet")}
+    assert before == after

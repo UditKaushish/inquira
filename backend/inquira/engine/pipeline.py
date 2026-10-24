@@ -12,6 +12,7 @@ and lets it run in a worker process later without changes.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ from inquira.core.errors import ApiError
 from inquira.engine import prompts
 from inquira.engine.charts import choose_chart, infer_chart
 from inquira.engine.context import KnowledgeItem, render_knowledge, render_schema, select_knowledge, select_tables
-from inquira.engine.llm.providers import LLMProvider
+from inquira.engine.llm.providers import LLMError, LLMProvider
 from inquira.engine.sql_guard import SqlRejected, validate_sql
 from inquira.engine.warehouse.base import Table, Warehouse
 
@@ -42,6 +43,8 @@ class PipelineInput:
     timeout_seconds: int = 30
     max_repairs: int = 2
     summarize_with_data: bool = True
+    deadline: float | None = None  # time.monotonic() value after which work stops
+    cancel: threading.Event | None = None
 
 
 @dataclass
@@ -60,6 +63,21 @@ class PipelineError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _check_budget(inp: PipelineInput) -> None:
+    if inp.cancel is not None and inp.cancel.is_set():
+        raise PipelineError("cancelled", "The request was cancelled.")
+    if inp.deadline is not None and time.monotonic() > inp.deadline:
+        raise PipelineError("timeout", "This question took too long to answer. Try a narrower question.")
+
+
+def _out_of_time(inp: PipelineInput) -> bool:
+    try:
+        _check_budget(inp)
+        return False
+    except PipelineError:
+        return True
 
 
 def _step(step_id: str, label: str, status: str, detail: str | None = None) -> Event:
@@ -109,8 +127,16 @@ def _run(inp: PipelineInput, out: PipelineOutput) -> Iterator[Event]:
     sql = None
     for attempt in range(inp.max_repairs + 1):
         label = "Writing SQL" if attempt == 0 else f"Fixing SQL (attempt {attempt + 1})"
+        _check_budget(inp)
         yield _step("plan", label, "running")
-        plan = inp.llm.complete_json(system, prompt)
+        try:
+            plan = inp.llm.complete_json(system, prompt)
+        except LLMError as e:
+            if "JSON" not in e.message:  # auth, quota, network: not something a retry prompt fixes
+                raise
+            yield _step("plan", label, "error", "The model's reply wasn't valid JSON")
+            prompt += "\n\nYour previous reply was not valid JSON. Respond with the JSON object only."
+            continue
         if plan.get("cannot_answer") and not plan.get("sql"):
             raise PipelineError("cannot_answer", str(plan["cannot_answer"])[:500])
         raw_sql = str(plan.get("sql") or "")
@@ -119,13 +145,15 @@ def _run(inp: PipelineInput, out: PipelineOutput) -> Iterator[Event]:
 
         yield _step("validate", "Validating query", "running")
         try:
-            sql = validate_sql(raw_sql, dialect, known, inp.max_rows).sql
+            schema = inp.warehouse.default_schema
+            sql = validate_sql(raw_sql, dialect, known, inp.max_rows, {schema} if schema else None).sql
         except SqlRejected as e:
             yield _step("validate", "Validating query", "error", str(e))
-            prompt += "\n\n" + prompts.REPAIR_USER.format(sql=raw_sql or "(empty)", error=str(e))
+            prompt += "\n\n" + prompts.REPAIR_USER.format(sql=raw_sql or "(empty)", error=prompts.error_text(str(e)))
             continue
         yield _step("validate", "Validating query", "done", "Read-only · single statement")
 
+        _check_budget(inp)
         yield _step("execute", "Running query", "running")
         started = time.perf_counter()
         try:
@@ -135,7 +163,7 @@ def _run(inp: PipelineInput, out: PipelineOutput) -> Iterator[Event]:
         except Exception as e:
             message = str(e).strip().splitlines()[0][:400] if str(e).strip() else type(e).__name__
             yield _step("execute", "Running query", "error", message)
-            prompt += "\n\n" + prompts.REPAIR_USER.format(sql=sql, error=message)
+            prompt += "\n\n" + prompts.REPAIR_USER.format(sql=sql, error=prompts.error_text(message))
             result = None
             continue
         elapsed = int((time.perf_counter() - started) * 1000)
@@ -155,7 +183,7 @@ def _run(inp: PipelineInput, out: PipelineOutput) -> Iterator[Event]:
     yield _step("summarize", "Summarising", "running")
     chart = infer_chart(result.columns, result.rows)
     answer = None
-    if inp.summarize_with_data and result.rows:
+    if inp.summarize_with_data and result.rows and not _out_of_time(inp):
         try:
             summary = inp.llm.complete_json(prompts.SUMMARY_SYSTEM, prompts.SUMMARY_USER.format(
                 question=inp.question, assumptions="; ".join(assumptions) or "none", sql=sql,

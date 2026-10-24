@@ -59,6 +59,11 @@ class Warehouse(ABC):
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
 
+    @property
+    def default_schema(self) -> str | None:
+        """The one schema qualifier generated SQL may use (e.g. `public.orders`)."""
+        return None
+
     @abstractmethod
     def introspect(self) -> list[Table]: ...
 

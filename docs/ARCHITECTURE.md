@@ -101,11 +101,21 @@ table and column names, expanded along foreign keys, and capped at 20 tables. Kn
 same way. No vector database is needed to start. The `select_tables` seam is where an embedding
 retriever (pgvector, etc.) plugs in.
 
-**Stateless API, horizontal scale.** No in-process state is authoritative. Sessions are signed cookies
-validated against a per-user token version in the DB. Rate limits move to Redis with one env var. The
-warehouse and schema caches are per-process and keyed by a fingerprint of the stored config, so a settings
-change in one replica is picked up by all of them. Long-running work streams over SSE, and nginx is configured
-with `proxy_buffering off`.
+**Stateless API, horizontal scale.** Durable state lives in the metadata database; sessions are signed cookies
+validated against a per-user token version there. Rate limits move to Redis with one env var. Two caches are
+still per-process: the warehouse handle (keyed by a fingerprint of the stored config, so a *datasource change*
+reaches every replica on its next request) and the schema snapshot (10-minute TTL, so a *schema refresh* reaches
+other replicas within 10 minutes). Moving the schema cache to Redis is on the roadmap. Questions stream over
+SSE with a heartbeat every 10s and a hard per-question deadline (`INQUIRA_QUESTION_DEADLINE_SECONDS`, default
+90s). The request's DB connection is released before streaming starts, and nginx runs with `proxy_buffering off`.
+
+**Health probes.** `/api/v1/livez` is async and dependency-free (liveness), so it never queues behind long
+questions. `/api/v1/readyz` checks the metadata DB and Redis (readiness), but not the warehouse or LLM, so an
+upstream outage doesn't pull every replica out of rotation.
+
+**Schema migrations.** Alembic, run automatically at startup under a Postgres advisory lock (one migrator
+across replicas), or explicitly with `python -m inquira migrate`. Installs created before migrations existed
+are stamped at the baseline and upgraded. See [DATA_MODEL.md](DATA_MODEL.md).
 
 **Zero-to-value onboarding.** `docker compose up` (or two dev commands) gives you a wizard: create admin →
 one-click demo warehouse → paste an API key → ask. Credentials entered in the UI are encrypted with a key
@@ -114,6 +124,14 @@ derived from `INQUIRA_SECRET_KEY`. They can be supplied via env instead for GitO
 **Privacy controls.** Only schema, admin-written knowledge, and at most 40 result rows (for the summary) are
 sent to the LLM provider. Point Inquira at a local model through the OpenAI-compatible provider (Ollama,
 vLLM) and no data leaves your network.
+
+## Deployment targets
+
+| Target | How |
+|---|---|
+| Vercel (serverless) | `vercel.json` + `api/index.py`. Neon Postgres and Upstash Redis from the Marketplace. See the README. |
+| Docker | `docker compose up`: nginx, 4 API workers, Postgres, Redis |
+| Kubernetes | The API image with `/livez` and `/readyz` probes and `terminationGracePeriodSeconds` ≥ the question deadline |
 
 ## Scaling path
 
@@ -125,7 +143,6 @@ vLLM) and no data leaves your network.
 
 ## Roadmap
 
-- Alembic migrations (tables are currently created idempotently on boot)
 - SSO (OIDC/SAML) and SCIM provisioning
 - Row/column-level access policies per role
 - Embedding-based retrieval adapter (pgvector) for very large schemas

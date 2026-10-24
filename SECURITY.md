@@ -20,8 +20,8 @@ Inquira sits between users, an LLM provider, and a data warehouse. We assume:
 
 | Layer | Control |
 |---|---|
-| SQL execution | sqlglot AST validation: single read query, forbidden statement types (DDL/DML/`COPY`/`ATTACH`/`SET`/`PRAGMA`/`SELECT INTO`), forbidden file/network/sleep functions, system catalogs blocked, table allow-list from the introspected schema, mandatory `LIMIT` |
-| Warehouse sessions | Read-only at the driver/session level for every adapter, plus statement timeouts. DuckDB also disables external access and locks its configuration |
+| SQL execution | sqlglot AST validation: single read query, forbidden statement types (DDL/DML/`COPY`/`ATTACH`/`SET`/`PRAGMA`/`SELECT INTO`), forbidden functions (file/network access, nested-query functions such as `query_to_xml`, sleep/locks, server and session introspection, extension loading), no table-valued functions, system catalogs blocked, table allow-list from the introspected schema with only the configured schema accepted as a qualifier (no cross-schema or cross-database references), mandatory `LIMIT` |
+| Warehouse sessions | Read-only at the driver/session level for DuckDB (`read_only`, external access disabled, config locked), SQLite (`mode=ro`), Postgres (`default_transaction_read_only`) and MySQL (`START TRANSACTION READ ONLY`), plus statement timeouts. **Snowflake has no read-only session mode**: Inquira refuses the built-in privileged roles (ACCOUNTADMIN, SYSADMIN, SECURITYADMIN, USERADMIN, ORGADMIN), and the role's grants are the enforcement boundary, so grant SELECT only |
 | Authentication | argon2id password hashing, timing-equalised login, minimum 10-character passwords, rate-limited login (per IP and per account) |
 | Sessions | Signed JWT in an `httpOnly`, `SameSite=Lax` cookie scoped to `/api`, `Secure` in production. Server-side revocation via per-user token version (logout, role change) |
 | CSRF | All state-changing requests require the `X-Inquira-Client` header, which cross-site forms cannot send. CORS is limited to configured origins |

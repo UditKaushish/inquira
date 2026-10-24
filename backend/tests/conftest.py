@@ -6,7 +6,8 @@ import pytest
 
 _tmp = Path(tempfile.mkdtemp(prefix="inquira-test-"))
 os.environ["INQUIRA_DATA_DIR"] = str(_tmp)
-os.environ["INQUIRA_DATABASE_URL"] = f"sqlite:///{_tmp / 'test.db'}"
+# Set TEST_DATABASE_URL to run the suite against Postgres (CI does both).
+os.environ["INQUIRA_DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{_tmp / 'test.db'}"
 os.environ["INQUIRA_SECRET_KEY"] = "test-secret-key-that-is-long-enough-1234567890"
 os.environ["INQUIRA_LOGIN_RATE_LIMIT"] = "1000/minute"
 

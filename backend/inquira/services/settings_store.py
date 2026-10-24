@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from inquira.core.config import get_settings
+from inquira.core.errors import ApiError
 from inquira.core.security import decrypt_secret, encrypt_secret
 from inquira.db import AppSetting
 from inquira.engine.llm.providers import PROVIDERS, LLMConfig
@@ -43,7 +44,25 @@ def _secrets(row: AppSetting) -> dict[str, str]:
     if not row.secret:
         return {}
     raw = decrypt_secret(row.secret)
-    return json.loads(raw) if raw else {}
+    if raw is None:
+        raise ApiError(
+            500, "secrets_unreadable",
+            "Stored credentials can't be decrypted. INQUIRA_SECRET_KEY probably changed: add the old key to "
+            "INQUIRA_PREVIOUS_SECRET_KEYS, or re-enter the credentials in Settings.",
+        )
+    return json.loads(raw)
+
+
+def rotate_secrets(db: Session) -> int:
+    """Re-encrypt every stored secret with the current key. Returns how many rows changed."""
+    from inquira.core.security import reencrypt_secret
+
+    count = 0
+    for row in db.query(AppSetting).filter(AppSetting.secret.isnot(None)):
+        row.secret = reencrypt_secret(row.secret)
+        count += 1
+    db.commit()
+    return count
 
 
 # --------------------------------------------------------------------------- LLM

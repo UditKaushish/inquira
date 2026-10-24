@@ -36,5 +36,5 @@ def configure_logging(production: bool) -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(logging.INFO)
-    for noisy in ("httpx", "httpcore", "google_genai", "anthropic", "openai"):
+    for noisy in ("httpx", "httpx2", "httpcore", "google_genai", "anthropic", "openai", "alembic"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

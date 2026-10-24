@@ -10,8 +10,9 @@ import time
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 
-from sqlalchemy import JSON, ForeignKey, Integer, String, Text, create_engine, event
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String, Text, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from inquira.core.config import get_settings
@@ -55,6 +56,7 @@ class AppSetting(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -69,6 +71,7 @@ class Conversation(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (Index("ix_messages_conversation_created", "conversation_id", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
@@ -107,6 +110,8 @@ engine = create_engine(
     _settings.database_url,
     pool_pre_ping=True,
     connect_args={"check_same_thread": False} if _is_sqlite else {},
+    **({} if _is_sqlite else {"pool_size": _settings.db_pool_size, "max_overflow": _settings.db_max_overflow,
+                              "pool_recycle": 300}),
 )
 
 if _is_sqlite:
@@ -122,11 +127,37 @@ if _is_sqlite:
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
+_MIGRATIONS = Path(__file__).parent / "migrations"
+_BASELINE = "0001"
+_PG_LOCK_ID = 727_001  # arbitrary constant: one migrator at a time across replicas
+
+
+def migrate() -> None:
+    """Bring the schema to the latest revision. Safe to call from every replica at startup."""
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config()
+    cfg.set_main_option("script_location", str(_MIGRATIONS))
+    with engine.begin() as conn:
+        if engine.dialect.name == "postgresql":
+            conn.execute(text("SELECT pg_advisory_xact_lock(:id)"), {"id": _PG_LOCK_ID})
+        cfg.attributes["connection"] = conn
+        tables = set(inspect(conn).get_table_names())
+        if "users" in tables and "alembic_version" not in tables:
+            # Installed before migrations existed: tables match the baseline, so record that and upgrade.
+            command.stamp(cfg, _BASELINE)
+        command.upgrade(cfg, "head")
+
+
 def init_db() -> None:
-    # Several workers may boot at once; a losing racer just retries the idempotent create.
+    if not get_settings().auto_migrate:
+        return
+    # Several workers may boot at once; on Postgres the advisory lock serialises them, and on SQLite
+    # a losing racer just retries.
     for attempt in range(5):
         try:
-            Base.metadata.create_all(engine)
+            migrate()
             return
         except Exception:
             if attempt == 4:

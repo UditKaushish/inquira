@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import queue
+import threading
 import time
 from collections.abc import Iterator
 from typing import Literal
@@ -24,6 +27,9 @@ from inquira.engine.pipeline import PipelineInput, PipelineOutput, run_pipeline
 from inquira.services import settings_store
 
 router = APIRouter()
+log = logging.getLogger(__name__)
+_DONE = object()
+_HEARTBEAT_SECONDS = 10
 
 
 class AskIn(BaseModel):
@@ -75,25 +81,59 @@ def ask(body: AskIn, request: Request, user: User = Depends(current_user), db: S
     knowledge = [KnowledgeItem(d.title, d.kind, d.content) for d in db.scalars(select(KnowledgeDoc))]
     conv_id, msg_id = conv.id, msg.id
 
-    def stream() -> Iterator[str]:
-        started = time.perf_counter()
-        yield _sse("meta", {"conversation_id": conv_id, "message_id": msg_id})
-        out = PipelineOutput()
+    # Release the request's pooled DB connection now; otherwise it stays checked out for the whole
+    # stream and a handful of concurrent questions exhausts the pool.
+    db.close()
+    question = body.question
+
+    def run_worker(events: queue.Queue, out: PipelineOutput, cancel: threading.Event, deadline: float) -> None:
         try:
             with SessionLocal() as sdb:
                 tables = settings_store.get_schema(sdb)
             inp = PipelineInput(
-                question=body.question, warehouse=warehouse, tables=tables, knowledge=knowledge, llm=llm,
+                question=question, warehouse=warehouse, tables=tables, knowledge=knowledge, llm=llm,
                 history=history, max_rows=settings.max_result_rows, timeout_seconds=settings.query_timeout_seconds,
-                max_repairs=settings.max_repair_attempts,
+                max_repairs=settings.max_repair_attempts, deadline=deadline, cancel=cancel,
             )
-            for event, data in run_pipeline(inp, out):
-                yield _sse(event, data)
+            for item in run_pipeline(inp, out):
+                if cancel.is_set():
+                    return
+                events.put(item)
         except Exception as e:  # e.g. schema introspection failed
+            log.exception("ask worker failed")
             out.status, out.error = "error", getattr(e, "message", None) or "Couldn't read the datasource schema."
-            yield _sse("error", {"code": "datasource_error", "message": out.error})
+            events.put(("error", {"code": "datasource_error", "message": out.error}))
         finally:
-            elapsed = int((time.perf_counter() - started) * 1000)
+            events.put(_DONE)
+
+    def stream() -> Iterator[str]:
+        started = time.monotonic()
+        deadline = started + settings.question_deadline_seconds
+        yield _sse("meta", {"conversation_id": conv_id, "message_id": msg_id})
+        out, events, cancel = PipelineOutput(), queue.Queue(), threading.Event()
+        worker = threading.Thread(target=run_worker, args=(events, out, cancel, deadline), daemon=True)
+        worker.start()
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    cancel.set()
+                    out.status, out.error = "error", (
+                        "This question took too long to answer. Try a narrower question, or try again shortly.")
+                    yield _sse("error", {"code": "timeout", "message": out.error})
+                    break
+                try:
+                    item = events.get(timeout=min(_HEARTBEAT_SECONDS, remaining))
+                except queue.Empty:
+                    # SSE comment: keeps proxies/load balancers from closing an idle stream.
+                    yield ": ping\n\n"
+                    continue
+                if item is _DONE:
+                    break
+                yield _sse(*item)
+        finally:
+            cancel.set()  # also covers client disconnects (generator closed)
+            elapsed = int((time.monotonic() - started) * 1000)
             with SessionLocal() as sdb:
                 m = sdb.get(Message, msg_id)
                 if m is not None:

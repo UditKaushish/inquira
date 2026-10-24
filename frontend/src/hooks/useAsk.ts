@@ -118,7 +118,12 @@ export function useAsk(onConversation: (id: string) => void) {
               break;
             case "done":
               finished = true;
-              patch(key, () => ({ status: "done", elapsedMs: ev.data.elapsed_ms, messageId: ev.data.message_id }));
+              // The server always sends `done` last, even after `error`: keep the error visible.
+              patch(key, (t) => ({
+                status: t.status === "error" ? "error" : "done",
+                elapsedMs: ev.data.elapsed_ms,
+                messageId: ev.data.message_id,
+              }));
               break;
           }
         }

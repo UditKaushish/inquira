@@ -11,7 +11,7 @@ from inquira.core.config import get_settings
 
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
-_VERSION = "1"
+_VERSION = "2"  # bump when the demo build changes so stale files are rebuilt
 
 _DDL = """
 CREATE TABLE customers (
@@ -66,15 +66,9 @@ CREATE TABLE order_payments (
 );
 """
 
-# CSV file -> (table, explicit column list in CSV order)
-_LOADS = [
-    ("customers.csv", "customers"),
-    ("sellers.csv", "sellers"),
-    ("products.csv", "products"),
-    ("orders.csv", "orders"),
-    ("order_items.csv", "order_items"),
-    ("order_payments.csv", "order_payments"),
-]
+# Load order respects foreign keys. Source files are zstd Parquet (17 MB vs 48 MB as CSV), all-text
+# columns that the typed DDL above casts on insert.
+_LOADS = ["customers", "sellers", "products", "orders", "order_items", "order_payments"]
 
 DEMO_KNOWLEDGE = [
     ("Revenue", "metric",
@@ -117,7 +111,7 @@ def demo_path() -> Path:
 
 
 def demo_available() -> bool:
-    return (get_settings().demo_data_dir / "orders.csv").exists() or demo_path().exists()
+    return (get_settings().demo_data_dir / "orders.parquet").exists() or demo_path().exists()
 
 
 def ensure_demo_database() -> Path:
@@ -130,8 +124,8 @@ def ensure_demo_database() -> Path:
         import duckdb
 
         src = get_settings().demo_data_dir
-        if not (src / "orders.csv").exists():
-            raise FileNotFoundError(f"Demo CSVs not found in {src}")
+        if not (src / "orders.parquet").exists():
+            raise FileNotFoundError(f"Demo data not found in {src}")
         # Unique temp file + atomic rename: safe when several worker processes race.
         tmp = path.with_suffix(f".{os.getpid()}.building")
         tmp.unlink(missing_ok=True)
@@ -139,11 +133,9 @@ def ensure_demo_database() -> Path:
         conn = duckdb.connect(str(tmp))
         try:
             conn.execute(_DDL)
-            for filename, table in _LOADS:
-                csv_path = str(src / filename).replace("'", "''")
-                conn.execute(
-                    f"INSERT INTO {table} SELECT * FROM read_csv('{csv_path}', header=true, all_varchar=true)"
-                )
+            for table in _LOADS:
+                source = str(src / f"{table}.parquet").replace("'", "''")
+                conn.execute(f"INSERT INTO {table} SELECT * FROM read_parquet('{source}')")
             conn.execute("CHECKPOINT")
         finally:
             conn.close()

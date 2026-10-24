@@ -37,6 +37,10 @@ class DuckDBWarehouse(Warehouse):
     _lock = threading.Lock()
     _connections: dict[str, Any] = {}
 
+    @property
+    def default_schema(self) -> str | None:
+        return "main"
+
     def _conn(self) -> Any:
         import duckdb
 
@@ -104,6 +108,10 @@ class SQLiteWarehouse(Warehouse):
     dialect = "sqlite"
     fields = [FieldSpec("path", "Database file path", placeholder="/data/app.db")]
 
+    @property
+    def default_schema(self) -> str | None:
+        return "main"
+
     def _conn(self) -> sqlite3.Connection:
         path = Path(self.config["path"]).expanduser()
         if not path.exists():
@@ -165,6 +173,10 @@ class PostgresWarehouse(Warehouse):
     def schema(self) -> str:
         return self.config.get("schema") or "public"
 
+    @property
+    def default_schema(self) -> str | None:
+        return self.schema
+
     def introspect(self) -> list[Table]:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -205,6 +217,10 @@ class MySQLWarehouse(Warehouse):
         FieldSpec("user", "User", help="Use a dedicated read-only user."),
         FieldSpec("password", "Password", "password", secret=True),
     ]
+
+    @property
+    def default_schema(self) -> str | None:
+        return self.config.get("database")
 
     def _connect(self) -> Any:
         try:
@@ -253,6 +269,26 @@ class MySQLWarehouse(Warehouse):
 
 # --------------------------------------------------------------------------- Snowflake
 
+# Snowflake has no read-only session mode, so safety rests on the role's grants. Refuse the
+# built-in roles that can always write or administer; operators should grant a SELECT-only role.
+_PRIVILEGED_SNOWFLAKE_ROLES = {"ACCOUNTADMIN", "ORGADMIN", "SECURITYADMIN", "SYSADMIN", "USERADMIN"}
+
+
+def _assert_unprivileged_snowflake_role(conn: Any) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT CURRENT_ROLE()")
+        role = str((cur.fetchone() or [""])[0] or "").upper()
+    finally:
+        cur.close()
+    if role in _PRIVILEGED_SNOWFLAKE_ROLES:
+        conn.close()
+        raise bad_request(
+            f"Inquira refuses to connect as the privileged Snowflake role {role}. "
+            "Create a role with SELECT-only grants on the schemas users should query.",
+            "datasource_error",
+        )
+
 
 class SnowflakeWarehouse(Warehouse):
     kind = "snowflake"
@@ -269,18 +305,24 @@ class SnowflakeWarehouse(Warehouse):
         FieldSpec("role", "Role", required=False, help="Should be a read-only role, never ACCOUNTADMIN."),
     ]
 
+    @property
+    def default_schema(self) -> str | None:
+        return self.config.get("schema")
+
     def _connect(self, timeout: int = 30) -> Any:
         try:
             import snowflake.connector
         except ImportError as e:
             raise bad_request("Snowflake driver not installed: pip install 'inquira[snowflake]'") from e
         c = self.config
-        return snowflake.connector.connect(
+        conn = snowflake.connector.connect(
             account=c["account"], user=c["user"], password=c.get("password"),
             warehouse=c["warehouse"], database=c["database"], schema=c["schema"],
             role=c.get("role") or None, login_timeout=15, application="Inquira",
             session_parameters={"STATEMENT_TIMEOUT_IN_SECONDS": timeout, "QUERY_TAG": "inquira"},
         )
+        _assert_unprivileged_snowflake_role(conn)
+        return conn
 
     def introspect(self) -> list[Table]:
         with self._connect() as conn:

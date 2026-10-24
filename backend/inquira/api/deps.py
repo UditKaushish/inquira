@@ -54,9 +54,17 @@ def admin_user(user: User = Depends(current_user)) -> User:
 
 
 def client_ip(request: Request) -> str:
-    # Behind a trusted proxy (nginx in our compose file) use X-Forwarded-For's first hop.
-    fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
+    """Client address for rate limiting.
+
+    Forwarding headers are only honoured when INQUIRA_TRUST_PROXY_HEADERS is set, i.e. the API is
+    reachable *only* through a proxy that overwrites them (our nginx config, Vercel). Otherwise any
+    client could send a fake X-Forwarded-For and get a fresh rate-limit bucket per request.
+    """
+    if get_settings().trust_proxy_headers:
+        real = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for", "").split(",")[0]
+        if real.strip():
+            return real.strip()
+    return request.client.host if request.client else "unknown"
 
 
 def user_json(u: User) -> dict:
