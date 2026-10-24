@@ -76,7 +76,7 @@ DEMO_KNOWLEDGE = [
      "(price + freight_value). Payments in order_payments.payment_value already include freight."),
     ("Delivered orders", "metric",
      "An order counts as delivered when orders.order_status = 'delivered'. Delivery time in days = "
-     "date_diff('day', order_purchase_timestamp, order_delivered_customer_date)."),
+     "the number of days between order_purchase_timestamp and order_delivered_customer_date."),
     ("Late delivery", "metric",
      "An order is late when order_delivered_customer_date > order_estimated_delivery_date."),
     ("Average order value", "metric",
@@ -106,12 +106,50 @@ DEMO_SUGGESTIONS = [
 ]
 
 
+def duckdb_installed() -> bool:
+    try:
+        import duckdb  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def demo_path() -> Path:
     return get_settings().data_dir / f"demo_v{_VERSION}.duckdb"
 
 
+def sqlite_demo_path() -> Path:
+    return get_settings().data_dir / f"demo_v{_VERSION}.sqlite"
+
+
 def demo_available() -> bool:
-    return (get_settings().demo_data_dir / "orders.parquet").exists() or demo_path().exists()
+    src = get_settings().demo_data_dir
+    return (src / "orders.parquet").exists() or (src / "demo.sqlite.xz").exists() or demo_path().exists()
+
+
+def demo_backend() -> str:
+    """DuckDB when it's installed (Docker, local); otherwise the bundled SQLite build (serverless)."""
+    return "duckdb" if duckdb_installed() and (get_settings().demo_data_dir / "orders.parquet").exists() else "sqlite"
+
+
+def ensure_sqlite_demo() -> Path:
+    """Decompress the bundled demo.sqlite.xz (built by scripts/build_demo_sqlite.py) once per instance."""
+    path = sqlite_demo_path()
+    if path.exists():
+        return path
+    with _lock:
+        if path.exists():
+            return path
+        import lzma
+
+        src = get_settings().demo_data_dir / "demo.sqlite.xz"
+        if not src.exists():
+            raise FileNotFoundError(f"Demo data not found at {src}")
+        log.info("Unpacking SQLite demo warehouse to %s", path)
+        tmp = path.with_suffix(f".{os.getpid()}.building")
+        tmp.write_bytes(lzma.decompress(src.read_bytes()))
+        os.replace(tmp, path)
+        return path
 
 
 def ensure_demo_database() -> Path:

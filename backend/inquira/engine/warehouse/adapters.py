@@ -86,16 +86,34 @@ class DuckDBWarehouse(Warehouse):
             cur.close()
 
 
-class DemoWarehouse(DuckDBWarehouse):
+class DemoWarehouse(Warehouse):
+    """The bundled Olist demo, on DuckDB when installed or on SQLite (serverless bundles skip DuckDB)."""
+
     kind = "demo"
     label = "Demo: Brazilian e-commerce"
     description = "100k real, anonymised orders from Olist (2016–2018). Perfect for a first look."
+    dialect = "duckdb"
     fields = []
 
     def __init__(self, config: dict[str, Any]) -> None:
-        from inquira.engine.demo import ensure_demo_database
+        from inquira.engine.demo import demo_backend, ensure_demo_database, ensure_sqlite_demo
 
-        super().__init__({"path": str(ensure_demo_database())})
+        super().__init__(config)
+        if demo_backend() == "duckdb":
+            self._impl: Warehouse = DuckDBWarehouse({"path": str(ensure_demo_database())})
+        else:
+            self._impl = SQLiteWarehouse({"path": str(ensure_sqlite_demo())})
+        self.dialect = self._impl.dialect  # type: ignore[misc]  # the SQL dialect follows the engine
+
+    @property
+    def default_schema(self) -> str | None:
+        return "main"
+
+    def introspect(self) -> list[Table]:
+        return self._impl.introspect()
+
+    def _run(self, sql: str, max_rows: int, timeout: int) -> tuple[list[str], list[tuple], bool]:
+        return self._impl._run(sql, max_rows, timeout)
 
 
 # --------------------------------------------------------------------------- SQLite

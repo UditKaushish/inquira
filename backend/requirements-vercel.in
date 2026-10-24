@@ -1,0 +1,22 @@
+# Dependencies for the Vercel serverless function (compiled into ../requirements.txt).
+# Same as pyproject's core set, minus what serverless doesn't need, to fit the 225 MB function limit:
+#   - uvicorn[standard]: Vercel runs the ASGI app itself
+#   - duckdb (~60 MB): the demo falls back to the bundled SQLite build
+# Regenerate: cd backend && uv pip compile requirements-vercel.in --python-version 3.12 \
+#             --python-platform x86_64-unknown-linux-gnu -o ../requirements.txt
+fastapi>=0.115
+pydantic>=2.7
+pydantic-settings>=2.3
+email-validator>=2.1
+sqlalchemy>=2.0.30
+pyjwt>=2.8
+argon2-cffi>=23.1
+cryptography>=42
+sqlglot>=25
+httpx>=0.27
+google-genai>=1.0
+anthropic>=0.40
+openai>=1.40
+alembic>=1.13
+psycopg[binary]>=3.1
+redis>=5.0

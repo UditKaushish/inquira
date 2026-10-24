@@ -139,3 +139,30 @@ def test_demo_build_never_touches_source_data(tmp_path, monkeypatch):
     assert built.parent == tmp_path and built.suffix == ".duckdb"
     after = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in src.glob("*.parquet")}
     assert before == after
+
+
+def test_sqlite_demo_fallback_used_on_serverless(tmp_path, monkeypatch):
+    """Vercel bundles skip DuckDB: the demo must work from the compressed SQLite build."""
+    from inquira.core.config import get_settings
+    from inquira.engine import demo
+
+    monkeypatch.setattr(get_settings(), "data_dir", tmp_path)
+    monkeypatch.setattr(demo, "duckdb_installed", lambda: False)
+    wh = DemoWarehouse({})
+    assert wh.dialect == "sqlite" and wh.default_schema == "main"
+    tables = {t.name: t for t in wh.introspect()}
+    assert {"orders", "order_items", "customers"} <= set(tables)
+    assert ("customer_id", "customers", "customer_id") in tables["orders"].foreign_keys
+
+    llm = ScriptedLLM([
+        '{"sql": "SELECT strftime(\'%Y\', order_purchase_timestamp) AS year, COUNT(*) AS orders '
+        'FROM orders GROUP BY 1 ORDER BY 1"}',
+        '{"answer": "ok", "chart": {"type": "bar", "x": "year", "y": ["orders"]}}',
+    ])
+    inp = PipelineInput(question="Orders per year", warehouse=wh, tables=list(tables.values()), knowledge=[], llm=llm)
+    out = PipelineOutput()
+    list(run_pipeline(inp, out))
+    assert out.status == "ok", out.error
+    assert sum(r[1] for r in out.result["rows"]) == 99441
+    revenue = wh.execute("SELECT ROUND(SUM(price), 2) FROM order_items", 10, 30).rows[0][0]
+    assert revenue == 13591643.7  # numeric affinity: prices are numbers, same total as the DuckDB demo

@@ -6,8 +6,8 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 120,
-      "includeFiles": "{backend/inquira/**,data/olist/**}",
-      "excludeFiles": "{backend/tests/**,backend/.venv/**,frontend/**,docs/**,**/__pycache__/**}"
+      "includeFiles": "{backend/inquira/**,data/olist/demo.sqlite.xz}",
+      "excludeFiles": "{backend/tests/**,backend/.venv/**,frontend/**,docs/**,scripts/**,data/olist/*.parquet,**/__pycache__/**}"
     }
   },
   "rewrites": [
