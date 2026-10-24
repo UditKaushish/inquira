@@ -87,7 +87,10 @@ def test_llm(body: LlmIn, _: User = Depends(admin_user), db: Session = Depends(g
 @router.put("/settings/llm")
 def save_llm(body: LlmIn, _: User = Depends(admin_user), db: Session = Depends(get_db)) -> dict:
     cfg = _llm_from_body(body, db)
-    build_llm(cfg)  # validates provider / key / base_url presence
+    llm = build_llm(cfg)  # validates provider / key / base_url presence and key-provider match
+    # Verify the credentials actually work before saving, so a bad key fails here
+    # with a clear message rather than on the user's first question.
+    llm.complete_json("Reply with JSON only.", 'Return exactly {"ok": true}.')
     settings_store.save_llm_config(db, cfg.provider, cfg.model, body.api_key or None, cfg.base_url)
     return {"llm": settings_store.public_llm(db)}
 

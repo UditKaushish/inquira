@@ -68,7 +68,10 @@ def test_logout_revokes_session(admin):
                                                  "password": "correct-horse-1"}).status_code == 200
 
 
-def test_llm_key_is_encrypted_and_never_returned(client, admin):
+def test_llm_key_is_encrypted_and_never_returned(client, admin, monkeypatch):
+    from inquira.engine.llm.providers import GeminiProvider
+
+    monkeypatch.setattr(GeminiProvider, "_complete", lambda self, system, prompt: '{"ok": true}')
     client.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "correct-horse-1"})
     r = client.put(f"{API}/settings/llm", json={"provider": "gemini", "model": "gemini-2.5-flash",
                                                 "api_key": "AIzaSECRET-test-key-123"})
@@ -97,3 +100,22 @@ def test_security_primitives():
     assert not verify_password("anything", None)
     assert decrypt_secret(encrypt_secret("s3cret")) == "s3cret"
     assert decrypt_secret("garbage") is None
+
+
+def test_bad_llm_key_is_rejected_on_save(client, admin, monkeypatch):
+    from inquira.engine.llm.providers import OpenAIProvider
+
+    class AuthErr(Exception):
+        status_code = 401
+
+    def fail(self, system, prompt):
+        raise AuthErr("Incorrect API key provided")
+
+    monkeypatch.setattr(OpenAIProvider, "_complete", fail)
+    client.post(f"{API}/auth/login", json={"email": "ada@example.com", "password": "correct-horse-1"})
+    before = client.get(f"{API}/settings").json()["llm"]
+    r = client.put(f"{API}/settings/llm", json={"provider": "openai", "api_key": "sk-proj-wrongwrongwrong"})
+    assert r.status_code == 502 and "rejected the API key" in r.json()["error"]["message"]
+    mismatch = client.put(f"{API}/settings/llm", json={"provider": "openai", "api_key": "sk-ant-api03-xyz"})
+    assert mismatch.status_code == 400 and mismatch.json()["error"]["code"] == "key_provider_mismatch"
+    assert client.get(f"{API}/settings").json()["llm"] == before  # nothing was saved

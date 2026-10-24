@@ -78,3 +78,25 @@ def test_chart_suggestion_is_validated():
     assert choose_chart({"type": "bar", "x": "state", "y": ["n"]}, cols, rows)["type"] == "bar"
     hallucinated = choose_chart({"type": "line", "x": "made_up", "y": ["also_made_up"]}, cols, rows)
     assert hallucinated["type"] == "bar" and hallucinated["x"] == "state"
+
+
+def test_key_provider_mismatch_is_caught():
+    import pytest
+
+    from inquira.core.errors import ApiError
+    from inquira.engine.llm.providers import build_llm
+
+    with pytest.raises(ApiError) as exc:
+        build_llm(LLMConfig("openai", "gpt-4.1-mini", "sk-ant-api03-abcdef"))
+    assert exc.value.code == "key_provider_mismatch" and "Anthropic" in exc.value.message
+    assert build_llm(LLMConfig("anthropic", "", "sk-ant-api03-abcdef")).config.model
+
+
+def test_auth_errors_are_friendly_and_scrubbed():
+    from inquira.engine.llm.providers import _friendly_error
+
+    class AuthErr(Exception):
+        status_code = 401
+
+    msg = _friendly_error("OpenAI", AuthErr("Incorrect API key provided: sk-ant-o*****oQAA"))
+    assert "rejected the API key" in msg and "sk-ant" not in msg

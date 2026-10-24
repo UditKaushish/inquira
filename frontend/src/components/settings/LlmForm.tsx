@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, Cpu, Gem, Lock, Sparkle } from "lucide-react";
 import { api } from "@/lib/api";
@@ -8,6 +8,13 @@ import { Button } from "../ui/Button";
 import { Field, Input } from "../ui/Input";
 import { Badge } from "../ui/Badge";
 import { Callout } from "../ui/Callout";
+
+const KEY_PREFIXES: Array<[string, string]> = [["sk-ant-", "anthropic"], ["AIza", "gemini"], ["sk-", "openai"]];
+
+function detectKeyProvider(key: string): string | null {
+  const k = key.trim();
+  return KEY_PREFIXES.find(([prefix]) => k.startsWith(prefix))?.[1] ?? null;
+}
 import { Spinner } from "../ui/Spinner";
 import { ProviderCard } from "./ProviderCard";
 
@@ -21,6 +28,8 @@ export function LlmForm({ current, onSaved, submitLabel = "Save and continue" }:
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState(current?.base_url ?? "");
   const [test, setTest] = useState<TestResult | null>(null);
+  const [switchedNote, setSwitchedNote] = useState<string | null>(null);
+  const pendingKey = useRef<string | null>(null);
   const listId = useId();
 
   const list = providers.data?.llm ?? [];
@@ -36,7 +45,8 @@ export function LlmForm({ current, onSaved, submitLabel = "Save and continue" }:
   useEffect(() => {
     if (!spec) return;
     setTest(null);
-    setApiKey("");
+    setApiKey(pendingKey.current ?? "");
+    pendingKey.current = null;
     if (isCurrent && current) {
       setModel(current.model);
       setBaseUrl(current.base_url ?? "");
@@ -121,7 +131,20 @@ export function LlmForm({ current, onSaved, submitLabel = "Save and continue" }:
                 autoComplete="new-password"
                 spellCheck={false}
                 value={apiKey}
-                onChange={(e) => { setTest(null); setApiKey(e.target.value); }}
+                onChange={(e) => {
+                  setTest(null);
+                  setSwitchedNote(null);
+                  const value = e.target.value;
+                  const owner = detectKeyProvider(value);
+                  if (owner && owner !== provider && provider !== "openai_compatible" && list.some((p) => p.id === owner)) {
+                    // A pasted key that clearly belongs to another provider: switch instead of failing later.
+                    pendingKey.current = value;
+                    setProvider(owner);
+                    setSwitchedNote(`That key belongs to ${list.find((p) => p.id === owner)?.label}, so we switched the provider for you.`);
+                    return;
+                  }
+                  setApiKey(value);
+                }}
                 placeholder={isCurrent && current?.has_key ? "•••••••• (unchanged)" : keyField.placeholder}
                 required={keyRequired}
               />
@@ -140,6 +163,7 @@ export function LlmForm({ current, onSaved, submitLabel = "Save and continue" }:
           {test.ok ? `${test.message}${test.latency_ms != null ? ` · ${formatDuration(test.latency_ms)}` : ""}` : test.message}
         </Callout>
       )}
+      {switchedNote && <Callout tone="info">{switchedNote}</Callout>}
       {save.isError && <Callout tone="danger">{save.error.message}</Callout>}
 
       <div className="flex flex-wrap gap-2">

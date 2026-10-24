@@ -51,15 +51,43 @@ class LLMProvider(ABC):
         except ApiError:
             raise
         except Exception as e:  # provider SDKs raise many types; surface a clean message
-            raise LLMError(f"{self.label} request failed: {_short(e)}") from e
+            raise LLMError(_friendly_error(self.label, e)) from e
         return parse_json(text)
 
 
 def _short(e: Exception) -> str:
     msg = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
-    # Never echo anything that looks like a credential back to the client.
-    msg = re.sub(r"(sk-|AIza|key=)[A-Za-z0-9_\-]{8,}", r"\1***", msg)
+    # Never echo anything that looks like a credential (raw or provider-masked) back to the client.
+    msg = re.sub(r"(sk-|AIza|key=)[A-Za-z0-9_\-*.]{4,}", r"\1***", msg)
     return msg[:300]
+
+
+def _friendly_error(label: str, e: Exception) -> str:
+    status = getattr(e, "status_code", None) or getattr(e, "code", None)
+    text = str(e).lower()
+    if status in (401, 403) or any(k in text for k in ("api key", "api_key", "unauthorized", "authentication",
+                                                        "permission denied")):
+        return f"{label} rejected the API key. Check it's correct and active, and that it belongs to {label}."
+    if status == 404 or "not found" in text and "model" in text:
+        return f"{label} doesn't recognise that model name. Pick one of the suggested models in Settings."
+    if status == 429 or "quota" in text or "rate limit" in text:
+        return f"{label} is rate-limiting this key or its quota is exhausted. Try again shortly."
+    if "timed out" in text or "timeout" in text:
+        return f"{label} didn't respond in time. Please try again."
+    if "connect" in text:
+        return f"Couldn't reach {label}. Check the network or base URL."
+    return f"{label} request failed: {_short(e)}"
+
+
+# Recognisable key prefixes -> the provider that issued them.
+_KEY_PREFIXES = [("sk-ant-", "anthropic"), ("AIza", "gemini"), ("sk-", "openai")]
+
+
+def detect_key_provider(api_key: str | None) -> str | None:
+    for prefix, provider in _KEY_PREFIXES:
+        if api_key and api_key.strip().startswith(prefix):
+            return provider
+    return None
 
 
 def parse_json(text: str) -> dict[str, Any]:
@@ -187,6 +215,11 @@ def build_llm(config: LLMConfig) -> LLMProvider:
         config.model = provider.default_model
     if any(f.name == "api_key" and f.required for f in provider.fields) and not config.api_key:
         raise ApiError(400, "llm_not_configured", f"{provider.label} needs an API key.")
+    owner = detect_key_provider(config.api_key)
+    if owner and owner != provider.id and provider.id != "openai_compatible":
+        raise ApiError(400, "key_provider_mismatch",
+                       f"That looks like a {PROVIDERS[owner].label} key, but {provider.label} is selected. "
+                       f"Choose {PROVIDERS[owner].label} as the provider, or paste a {provider.label} key.")
     if provider.id == "openai_compatible" and not config.base_url:
         raise ApiError(400, "llm_not_configured", "A base URL is required for OpenAI-compatible providers.")
     return provider(config)
