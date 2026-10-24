@@ -28,3 +28,5 @@ var/
 # Research workspace
 research_notes/
 reports/
+.vercel
+.env*
